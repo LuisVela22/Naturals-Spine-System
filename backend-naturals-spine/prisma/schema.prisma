@@ -1,0 +1,153 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Rol {
+  CLIENTE
+  ADMIN
+}
+
+enum EstadoValidacion {
+  PENDIENTE
+  APROBADO
+  RECHAZADO
+}
+
+enum TipoOrden {
+  COMPRA
+  RENTA
+}
+
+enum EstadoOrden {
+  EN_REVISION
+  APROBADA
+  EN_ENVIO
+  CONCLUIDA
+}
+
+enum TipoDocumento {
+  RFC
+  INE
+  COMPROBANTE_DOMICILIO
+  FACTURA
+  REMISION
+  CONTRATO
+  COMPROBANTE_PAGO
+}
+
+model Usuario {
+  id                 String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  correo_electronico String                @unique @db.VarChar(255)
+  password_hash      String                @db.VarChar(255)
+  rol                Rol
+  activo             Boolean               @default(false)
+  creado_en          DateTime              @default(now()) @db.Timestamp()
+
+  cliente            ClienteInstitucional?
+  personal           PersonalEmpresa?
+  order_logs         OrderLog[]
+  documentos         Documento[]
+  reset_tokens       PasswordResetToken[]
+
+  @@map("usuarios")
+}
+
+model ClienteInstitucional {
+  id                String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  usuario_id        String            @unique @db.Uuid
+  rfc               String            @unique @db.VarChar(13)
+  razon_social      String            @db.VarChar(255)
+  nombre_contacto   String            @db.VarChar(255)
+  telefono          String            @db.VarChar(20)
+  direccion_fiscal  String            @db.Text
+  estado_validacion EstadoValidacion  @default(PENDIENTE)
+  motivo_rechazo    String?           @db.Text
+  creado_en         DateTime          @default(now()) @db.Timestamp()
+
+  usuario           Usuario           @relation(fields: [usuario_id], references: [id], onDelete: Cascade)
+  ordenes           Orden[]
+  documentos        Documento[]
+
+  @@map("clientes_institucionales")
+}
+
+model PersonalEmpresa {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  usuario_id      String   @unique @db.Uuid
+  numero_empleado String   @unique @db.VarChar(20)
+  nombre_completo String   @db.VarChar(255)
+  departamento    String?  @db.VarChar(100)
+
+  usuario         Usuario  @relation(fields: [usuario_id], references: [id], onDelete: Cascade)
+
+  @@map("personal_empresa")
+}
+
+model Orden {
+  id                     String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  cliente_id             String       @db.Uuid
+  tipo_orden             TipoOrden
+  descripcion_equipo     String       @db.Text
+  estado                 EstadoOrden  @default(EN_REVISION)
+  bloqueado_para_cliente Boolean      @default(false)
+  notificacion_pendiente Boolean      @default(false)
+  monto_total            Decimal?     @db.Decimal(12, 2)
+  fecha_creacion         DateTime     @default(now()) @db.Timestamp()
+  fecha_actualizacion    DateTime     @updatedAt @db.Timestamp()
+
+  cliente                ClienteInstitucional @relation(fields: [cliente_id], references: [id], onDelete: Restrict)
+  order_logs             OrderLog[]
+  documentos             Documento[]
+
+  @@map("ordenes")
+}
+
+model OrderLog {
+  id              String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orden_id        String      @db.Uuid
+  usuario_id      String      @db.Uuid
+  estado_anterior EstadoOrden
+  estado_nuevo    EstadoOrden
+  comentario      String?     @db.Text
+  fecha_cambio    DateTime    @default(now()) @db.Timestamp()
+
+  orden           Orden       @relation(fields: [orden_id], references: [id], onDelete: Cascade)
+  usuario         Usuario     @relation(fields: [usuario_id], references: [id], onDelete: Restrict)
+
+  @@map("order_logs")
+}
+
+model Documento {
+  id             String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  cliente_id     String?        @db.Uuid
+  orden_id       String?        @db.Uuid
+  tipo_documento TipoDocumento
+  nombre_archivo String         @db.VarChar(255)
+  url_gcs        String         @db.VarChar(500)
+  mime_type      String         @db.VarChar(100)
+  tamano_bytes   Int
+  fecha_carga    DateTime       @default(now()) @db.Timestamp()
+  cargado_por    String         @db.Uuid
+
+  cliente        ClienteInstitucional? @relation(fields: [cliente_id], references: [id], onDelete: Cascade)
+  orden          Orden?                @relation(fields: [orden_id], references: [id], onDelete: Cascade)
+  usuario        Usuario               @relation(fields: [cargado_por], references: [id], onDelete: Restrict)
+
+  @@map("documentos")
+}
+
+model PasswordResetToken {
+  id         String   @id @default(uuid()) @db.Uuid
+  token      String   @unique
+  usuario_id String   @db.Uuid
+  usuario    Usuario  @relation(fields: [usuario_id], references: [id], onDelete: Cascade)
+  expira_en  DateTime
+  creado_en  DateTime @default(now())
+
+  @@map("password_reset_tokens")
+}
