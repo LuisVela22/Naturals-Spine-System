@@ -163,10 +163,20 @@ const cambiarEstado = async (nuevoEstado: 'APROBADA' | 'EN_ENVIO' | 'CONCLUIDA')
 const descargarDocumento = async (documento: Documento) => {
   try {
     const { data } = await api.get(`/documentos/${documento.id}/descarga`);
+
     if (data.storage === 'local') {
-      const response = await api.get(data.url, { responseType: 'blob' });
+      const localUrl = data.url.startsWith('/api/')
+        ? data.url.substring(4)
+        : data.url;
+
+      const response = await api.get(localUrl, {
+        responseType: 'blob',
+      });
+
       const url = URL.createObjectURL(response.data);
+
       window.open(url, '_blank', 'noopener,noreferrer');
+
       setTimeout(() => URL.revokeObjectURL(url), 60_000);
     } else {
       window.open(data.url, '_blank', 'noopener,noreferrer');
