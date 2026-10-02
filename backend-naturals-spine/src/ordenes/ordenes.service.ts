@@ -13,14 +13,8 @@ export class OrdenesService {
   ) {}
 
   async crear(usuarioId: string, dto: CrearOrdenDto) {
-    const cliente = await this.prisma.clienteInstitucional.findUnique({
-      where: { usuario_id: usuarioId },
-    });
-
-    if (!cliente) {
-      throw new ForbiddenException('Solo los clientes institucionales pueden registrar órdenes');
-    }
-
+    const cliente = await this.prisma.clienteInstitucional.findUnique({ where: { usuario_id: usuarioId } });
+    if (!cliente) throw new ForbiddenException('Solo los clientes institucionales pueden registrar órdenes');
     if (cliente.estado_validacion !== EstadoValidacion.APROBADO) {
       throw new ForbiddenException('La cuenta no está validada por la empresa (RN01)');
     }
@@ -45,7 +39,6 @@ export class OrdenesService {
           comentario: 'Apertura inicial de orden médica',
         },
       });
-
       return orden;
     });
   }
@@ -55,17 +48,15 @@ export class OrdenesService {
       where: { id: ordenId },
       include: { documentos: true },
     });
-
-    if (!orden) {
-      throw new NotFoundException('Orden no encontrada');
-    }
+    if (!orden) throw new NotFoundException('Orden no encontrada');
 
     const estadoActual = orden.estado;
     const nuevoEstado = dto.nuevo_estado;
+    const comentario = dto.comentario?.trim();
 
     const transicionesValidas: Record<EstadoOrden, EstadoOrden[]> = {
-      [EstadoOrden.EN_REVISION]: [EstadoOrden.APROBADA],
-      [EstadoOrden.APROBADA]: [EstadoOrden.EN_ENVIO],
+      [EstadoOrden.EN_REVISION]: [EstadoOrden.APROBADA, EstadoOrden.CONCLUIDA],
+      [EstadoOrden.APROBADA]: [EstadoOrden.EN_ENVIO, EstadoOrden.CONCLUIDA],
       [EstadoOrden.EN_ENVIO]: [EstadoOrden.CONCLUIDA],
       [EstadoOrden.CONCLUIDA]: [],
     };
@@ -74,22 +65,40 @@ export class OrdenesService {
       throw new BadRequestException(`Transición inválida: de ${estadoActual} a ${nuevoEstado}`);
     }
 
-    if (nuevoEstado === EstadoOrden.CONCLUIDA) {
-      const tieneFacturaORemision = orden.documentos.some(
-        (doc) => doc.tipo_documento === TipoDocumento.FACTURA || doc.tipo_documento === TipoDocumento.REMISION,
+    const tieneRemision = orden.documentos.some((doc) => doc.tipo_documento === TipoDocumento.REMISION);
+    const tieneFacturaORemision = orden.documentos.some(
+      (doc) => doc.tipo_documento === TipoDocumento.FACTURA || doc.tipo_documento === TipoDocumento.REMISION,
+    );
+    const tieneComprobantePago = orden.documentos.some(
+      (doc) => doc.tipo_documento === TipoDocumento.COMPROBANTE_PAGO,
+    );
+
+    if (estadoActual === EstadoOrden.EN_REVISION && nuevoEstado === EstadoOrden.APROBADA && !tieneRemision) {
+      throw new BadRequestException('RN-ORDEN: No se puede aceptar la orden sin haber cargado primero la remisión.');
+    }
+
+    if (estadoActual === EstadoOrden.EN_REVISION && nuevoEstado === EstadoOrden.CONCLUIDA && !comentario) {
+      throw new BadRequestException('Debe indicar el motivo por el que se rechaza la solicitud.');
+    }
+
+    if (estadoActual === EstadoOrden.APROBADA && nuevoEstado === EstadoOrden.EN_ENVIO && !tieneComprobantePago) {
+      throw new BadRequestException(
+        'RN-PAGO: No se puede pasar la orden a Envío hasta recibir y verificar el comprobante de pago.',
       );
-      if (!tieneFacturaORemision) {
-        throw new BadRequestException('RN04: No se puede concluir la orden sin factura o remisión vinculada');
-      }
+    }
+
+    if (estadoActual === EstadoOrden.APROBADA && nuevoEstado === EstadoOrden.CONCLUIDA && !comentario) {
+      throw new BadRequestException('Debe indicar el motivo del rechazo de continuidad de la orden.');
+    }
+
+    if (nuevoEstado === EstadoOrden.CONCLUIDA && estadoActual === EstadoOrden.EN_ENVIO && !tieneFacturaORemision) {
+      throw new BadRequestException('RN04: No se puede concluir la orden sin factura o remisión vinculada');
     }
 
     const ordenActualizada = await this.prisma.$transaction(async (tx) => {
       const actualizada = await tx.orden.update({
         where: { id: ordenId },
-        data: {
-          estado: nuevoEstado,
-          notificacion_pendiente: true,
-        },
+        data: { estado: nuevoEstado, notificacion_pendiente: true },
       });
 
       await tx.orderLog.create({
@@ -98,16 +107,13 @@ export class OrdenesService {
           usuario_id: usuarioId,
           estado_anterior: estadoActual,
           estado_nuevo: nuevoEstado,
-          comentario: dto.comentario || 'Actualización de estado por administración',
+          comentario: comentario || 'Actualización de estado por administración',
         },
       });
-
       return actualizada;
     });
 
-    // Disparar procesamiento del evento de notificación en segundo plano
     await this.notificacionesService.procesarAlertasPendientes();
-
     return ordenActualizada;
   }
 
@@ -123,13 +129,8 @@ export class OrdenesService {
       });
     }
 
-    const cliente = await this.prisma.clienteInstitucional.findUnique({
-      where: { usuario_id: usuario.id },
-    });
-
-    if (!cliente) {
-      throw new NotFoundException('Cliente no localizado');
-    }
+    const cliente = await this.prisma.clienteInstitucional.findUnique({ where: { usuario_id: usuario.id } });
+    if (!cliente) throw new NotFoundException('Cliente no localizado');
 
     return this.prisma.orden.findMany({
       where: { cliente_id: cliente.id },
