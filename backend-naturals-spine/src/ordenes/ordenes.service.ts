@@ -19,7 +19,7 @@ export class OrdenesService {
       throw new ForbiddenException('La cuenta no está validada por la empresa (RN01)');
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    const ordenCreada = await this.prisma.$transaction(async (tx) => {
       const orden = await tx.orden.create({
         data: {
           cliente_id: cliente.id,
@@ -41,12 +41,25 @@ export class OrdenesService {
       });
       return orden;
     });
+
+    const clienteConUsuario = await this.prisma.clienteInstitucional.findUnique({
+      where: { id: cliente.id },
+      include: { usuario: true },
+    });
+    if (clienteConUsuario?.usuario?.correo_electronico) {
+      await this.notificacionesService.enviarConfirmacionOrden(
+        clienteConUsuario.usuario.correo_electronico,
+        cliente.razon_social,
+        ordenCreada,
+      );
+    }
+    return ordenCreada;
   }
 
   async transicionarEstado(ordenId: string, usuarioId: string, dto: CambiarEstadoOrdenDto) {
     const orden = await this.prisma.orden.findUnique({
       where: { id: ordenId },
-      include: { documentos: true },
+      include: { documentos: true, cliente: { include: { usuario: true } } },
     });
     if (!orden) throw new NotFoundException('Orden no encontrada');
 
@@ -114,6 +127,17 @@ export class OrdenesService {
     });
 
     await this.notificacionesService.procesarAlertasPendientes();
+    const correoCliente = orden.cliente?.usuario?.correo_electronico;
+    if (correoCliente) {
+      await this.notificacionesService.enviarCambioEstadoOrden(
+        correoCliente,
+        orden.cliente.razon_social,
+        { ...ordenActualizada, documentos: orden.documentos },
+        estadoActual,
+        nuevoEstado,
+        comentario,
+      );
+    }
     return ordenActualizada;
   }
 

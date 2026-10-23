@@ -6,6 +6,8 @@ import { LoginDto } from './dto/login.dto';
 import { RegistroClienteDto } from './dto/registro-cliente.dto';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
+import { promises as fs } from 'fs';
+import * as path from 'path';
 import { Rol, EstadoValidacion } from '@prisma/client';
 
 @Injectable()
@@ -16,7 +18,7 @@ export class AuthService {
     private notificacionesService: NotificacionesService,
   ) {}
 
-  async registrarCliente(dto: RegistroClienteDto) {
+  async registrarCliente(dto: RegistroClienteDto, files: Array<{ fieldname: string; originalname: string; mimetype: string; size: number; buffer: Buffer }> = []) {
     const existeUsuario = await this.prisma.usuario.findUnique({
       where: { correo_electronico: dto.correo_electronico },
     });
@@ -55,10 +57,32 @@ export class AuthService {
         },
       });
 
-      if (dto.documentos_ids && dto.documentos_ids.length > 0) {
-        await tx.documento.updateMany({
-          where: { id: { in: dto.documentos_ids } },
-          data: { cliente_id: cliente.id },
+      const localDir = path.resolve(process.env.LOCAL_STORAGE_DIR || path.join(process.cwd(), 'storage', 'documentos'));
+      await fs.mkdir(localDir, { recursive: true });
+      const tipoPorCampo: Record<string, 'RFC' | 'INE' | 'COMPROBANTE_DOMICILIO'> = {
+        documento_rfc: 'RFC',
+        documento_ine: 'INE',
+        documento_domicilio: 'COMPROBANTE_DOMICILIO',
+      };
+      for (const file of files) {
+        if (!tipoPorCampo[file.fieldname]) continue;
+        if (!['application/pdf', 'image/jpeg', 'image/png'].includes(file.mimetype) || file.size > 5 * 1024 * 1024) {
+          throw new BadRequestException('Los documentos deben ser PDF, JPEG o PNG y pesar máximo 5 MB.');
+        }
+        const safeName = path.basename(file.originalname).replace(/[^a-zA-Z0-9._-]/g, '_');
+        const uniqueName = `${Date.now()}_${crypto.randomBytes(5).toString('hex')}_${safeName}`;
+        const absolutePath = path.join(localDir, uniqueName);
+        await fs.writeFile(absolutePath, file.buffer);
+        await tx.documento.create({
+          data: {
+            cliente_id: cliente.id,
+            tipo_documento: tipoPorCampo[file.fieldname],
+            nombre_archivo: file.originalname,
+            url_gcs: `local/${uniqueName}`,
+            mime_type: file.mimetype,
+            tamano_bytes: file.size,
+            cargado_por: usuario.id,
+          },
         });
       }
 
