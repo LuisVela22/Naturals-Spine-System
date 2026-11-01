@@ -6,13 +6,14 @@ import * as path from 'path';
 import { PrismaService } from '../prisma/prisma.service';
 import { VincularDocumentoDto } from './dto/vincular-documento.dto';
 import { TipoDocumento, Rol } from '@prisma/client';
+import { NotificacionesService } from '../notificaciones/notificaciones.service';
 
 @Injectable()
 export class DocumentosService {
   private storage: Storage;
   private bucketName: string;
 
-  constructor(private prisma: PrismaService) {
+  constructor(private prisma: PrismaService, private notificaciones: NotificacionesService) {
     this.storage = new Storage();
     this.bucketName = process.env.GCP_STORAGE_BUCKET_NAME || 'naturals-spine-docs-bucket';
   }
@@ -28,12 +29,12 @@ export class DocumentosService {
   private validateFile(dto: VincularDocumentoDto) {
     const tiposPermitidos = ['application/pdf', 'image/jpeg', 'image/png'];
     if (!tiposPermitidos.includes(dto.mime_type)) {
-      throw new BadRequestException('RN03: Solo se admiten archivos PDF, JPEG o PNG');
+      throw new BadRequestException('Solo se admiten archivos PDF, JPEG o PNG.');
     }
 
     const maxBytes = 5 * 1024 * 1024;
     if (dto.tamano_bytes > maxBytes) {
-      throw new BadRequestException('RN03: El archivo supera el límite máximo permitido de 5MB');
+      throw new BadRequestException('El archivo supera el límite máximo permitido de 5 MB.');
     }
   }
 
@@ -55,7 +56,7 @@ export class DocumentosService {
       const orden = await this.prisma.orden.findUnique({ where: { id: dto.orden_id } });
       if (!orden) throw new NotFoundException('Orden no encontrada');
       if (orden.bloqueado_para_cliente && usuario.rol === Rol.CLIENTE) {
-        throw new BadRequestException('RN05: La orden se encuentra inmutable tras la carga del comprobante');
+        throw new BadRequestException('La orden se encuentra bloqueada tras la carga del comprobante.');
       }
     }
   }
@@ -85,6 +86,25 @@ export class DocumentosService {
     });
 
     return { storage: 'gcp', uploadUrl, rutaGcs };
+  }
+
+  async guardarAclaracionRenta(usuarioId: string, ordenId: string, file: { originalname: string; mimetype: string; size: number; buffer: Buffer }) {
+    const dto: VincularDocumentoDto = { orden_id: ordenId, tipo_documento: TipoDocumento.CONTRATO, nombre_archivo: file.originalname, mime_type: file.mimetype, tamano_bytes: file.size };
+    this.validateFile(dto);
+    const orden = await this.prisma.orden.findUnique({ where: { id: ordenId }, select: { cliente_id: true } });
+    if (!orden) throw new NotFoundException('Orden no encontrada');
+    const safeName = path.basename(file.originalname).replace(/[^a-zA-Z0-9._-]/g, '_');
+    const uniqueName = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}_${safeName}`;
+    let ruta: string;
+    if (this.useLocalStorage()) {
+      await fs.mkdir(this.localStorageDir(), { recursive: true });
+      await fs.writeFile(path.join(this.localStorageDir(), uniqueName), file.buffer);
+      ruta = `local/${uniqueName}`;
+    } else {
+      ruta = `documentos/${uniqueName}`;
+      await this.storage.bucket(this.bucketName).file(ruta).save(file.buffer, { resumable: false, metadata: { contentType: file.mimetype } });
+    }
+    return this.prisma.documento.create({ data: { cliente_id: orden.cliente_id, orden_id: ordenId, tipo_documento: TipoDocumento.CONTRATO, nombre_archivo: file.originalname, url_gcs: ruta, mime_type: file.mimetype, tamano_bytes: file.size, cargado_por: usuarioId } });
   }
 
   async subirLocal(
@@ -117,7 +137,7 @@ export class DocumentosService {
 
     await fs.writeFile(absolutePath, file.buffer);
 
-    return this.prisma.$transaction(async (tx) => {
+    const documento = await this.prisma.$transaction(async (tx) => {
       const cliente = await tx.clienteInstitucional.findUnique({
         where: { usuario_id: usuario.id },
       });
@@ -142,12 +162,22 @@ export class DocumentosService {
         });
       }
 
+      if (effectiveDto.orden_id) {
+        const orden = await tx.orden.findUnique({ where: { id: effectiveDto.orden_id }, select: { estado: true } });
+        if (orden) await tx.orderLog.create({ data: { orden_id: effectiveDto.orden_id, usuario_id: usuario.id, estado_anterior: orden.estado, estado_nuevo: orden.estado, comentario: `Se adjuntó el documento ${effectiveDto.nombre_archivo}.` } });
+      }
+
       return documento;
     });
+    if (effectiveDto.orden_id && effectiveDto.tipo_documento === TipoDocumento.COMPROBANTE_PAGO) {
+      try { await this.notificaciones.notificarPersonalComprobante(effectiveDto.orden_id); }
+      catch (error: any) { console.warn(`No se pudo notificar el comprobante al personal: ${error.message}`); }
+    }
+    return documento;
   }
 
   async confirmarCarga(usuarioId: string, rutaGcs: string, dto: VincularDocumentoDto) {
-    return this.prisma.$transaction(async (tx) => {
+    const documento = await this.prisma.$transaction(async (tx) => {
       const cliente = await tx.clienteInstitucional.findUnique({
         where: { usuario_id: usuarioId },
       });
@@ -171,8 +201,18 @@ export class DocumentosService {
         });
       }
 
+      if (dto.orden_id) {
+        const orden = await tx.orden.findUnique({ where: { id: dto.orden_id }, select: { estado: true } });
+        if (orden) await tx.orderLog.create({ data: { orden_id: dto.orden_id, usuario_id: usuarioId, estado_anterior: orden.estado, estado_nuevo: orden.estado, comentario: `Se adjuntó el documento ${dto.nombre_archivo}.` } });
+      }
+
       return documento;
     });
+    if (dto.orden_id && dto.tipo_documento === TipoDocumento.COMPROBANTE_PAGO) {
+      try { await this.notificaciones.notificarPersonalComprobante(dto.orden_id); }
+      catch (error: any) { console.warn(`No se pudo notificar el comprobante al personal: ${error.message}`); }
+    }
+    return documento;
   }
 
   async obtenerPorOrden(ordenId: string) {

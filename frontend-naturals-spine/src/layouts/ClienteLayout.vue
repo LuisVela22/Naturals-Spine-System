@@ -62,7 +62,7 @@ const logout = () => {
             active-class="bg-blue-600/30 text-white border-l-4 border-blue-500" 
             class="flex items-center px-4 py-3 rounded-lg hover:bg-white/5 transition"
           >
-            <PlusCircle class="w-4 h-4 mr-3" /> Registrar Orden (CU04)
+            <PlusCircle class="w-4 h-4 mr-3" /> Registrar Orden
           </router-link>
           <router-link 
             @click="mobileOpen = false"

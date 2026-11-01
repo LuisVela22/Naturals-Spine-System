@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue';
+import { ref, onMounted, onBeforeUnmount, computed } from 'vue';
 import api from '../../api/axios';
 import { 
   Clock, 
@@ -9,13 +9,18 @@ import {
   User, 
   Zap 
 } from 'lucide-vue-next';
+import { etiquetasEstado, fechaHoraCDMX } from '../../utils/orden';
 
 const ordenes = ref<any[]>([]);
 const clientesPendientes = ref<any[]>([]);
 const totalDocumentos = ref(0);
 const loading = ref(true);
+const reloj = ref(Date.now());
+let refresco: ReturnType<typeof setInterval>;
+let relojTimer: ReturnType<typeof setInterval>;
 
-onMounted(async () => {
+const cargarDatos = async (inicial = false) => {
+  if (inicial) loading.value = true;
   try {
     const [resOrd, resCli, resStats] = await Promise.all([
       api.get('/ordenes'),
@@ -26,11 +31,19 @@ onMounted(async () => {
     clientesPendientes.value = resCli.data;
     totalDocumentos.value = resStats.data.totalDocumentos;
   } catch (err) {
-    console.error('Error al cargar datos del dashboard de operador:', err);
+    if (inicial) console.error('Error al cargar datos del dashboard de operador:', err);
   } finally {
     loading.value = false;
   }
-});
+};
+onMounted(() => { cargarDatos(true); refresco = setInterval(() => cargarDatos(), 15000); relojTimer = setInterval(() => reloj.value = Date.now(), 30000); });
+onBeforeUnmount(() => { clearInterval(refresco); clearInterval(relojTimer); });
+
+const prioridad = (o: any) => {
+  if (!o.fecha_requerida) return { color: 'bg-slate-300', label: 'Sin fecha requerida' };
+  const dias = (new Date(o.fecha_requerida).getTime() - reloj.value) / 86400000;
+  return dias > 7 ? { color: 'bg-emerald-500', label: 'Prioridad baja' } : dias >= 3 ? { color: 'bg-amber-400', label: 'Prioridad media' } : { color: 'bg-red-600', label: 'Prioridad alta' };
+};
 
 const ordenesPendientes = computed(() => {
   return ordenes.value.filter((o) => o.estado === 'EN_REVISION').length;
@@ -91,7 +104,7 @@ const ordenesEnProceso = computed(() => {
       <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-4">
         <div class="flex justify-between items-center pb-2 border-b border-slate-100">
           <h2 class="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center">
-            <User class="w-4 h-4 mr-2 text-blue-600" /> Por Validar (CU03)
+            <User class="w-4 h-4 mr-2 text-blue-600" /> Por validar
           </h2>
           <span class="text-[10px] bg-red-100 text-red-700 font-bold px-2 py-0.5 rounded-full">
             {{ clientesPendientes.length }} Ptes
@@ -125,21 +138,25 @@ const ordenesEnProceso = computed(() => {
           <table class="w-full text-left text-xs">
             <thead>
               <tr class="text-slate-400 border-b border-slate-100">
-                <th class="pb-3 font-semibold">ID Orden</th>
+                <th class="pb-3 font-semibold">ID / Solicitud</th>
                 <th class="pb-3 font-semibold">Cliente</th>
+                <th class="pb-3 font-semibold">Prioridad</th>
                 <th class="pb-3 font-semibold">Estado Actual</th>
                 <th class="pb-3 font-semibold text-right">Acción Rápida</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-slate-100">
               <tr v-if="ordenes.length === 0">
-                <td colspan="4" class="py-6 text-center text-slate-400">
+                <td colspan="5" class="py-6 text-center text-slate-400">
                   No hay órdenes registradas en la base de datos.
                 </td>
               </tr>
               <tr v-for="ord in ordenes.slice(0, 5)" :key="ord.id">
-                <td class="py-3 font-bold text-blue-600">#{{ ord.id.substring(0, 8) }}</td>
+                <td class="py-3"><p class="font-bold text-blue-600">#{{ ord.id.substring(0, 8) }}</p><p class="text-[10px] text-slate-400">{{ fechaHoraCDMX(ord.fecha_creacion) }}</p></td>
                 <td class="py-3 text-slate-700">{{ ord.cliente?.razon_social || 'Cliente' }}</td>
+                <td class="py-3">
+                  <span class="inline-block w-3 h-3 rounded-full" :class="prioridad(ord).color" :title="prioridad(ord).label"></span>
+                </td>
                 <td class="py-3">
                   <span 
                     :class="{
@@ -150,7 +167,7 @@ const ordenesEnProceso = computed(() => {
                     }"
                     class="px-2.5 py-1 rounded-full text-[10px] font-bold"
                   >
-                    {{ ord.estado }}
+                    {{ etiquetasEstado[ord.estado] || ord.estado }}
                   </span>
                 </td>
                 <td class="py-3 text-right">

@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue';
 import api from '../../api/axios';
 import { cargarDocumento } from '../../utils/documentos';
-import { AlertCircle, CheckCircle2, Download, Eye, FileText, FolderOpen, Search, Upload, X } from 'lucide-vue-next';
+import { etiquetasEstado, fechaHoraCDMX, normalizarBusqueda } from '../../utils/orden';
+import { AlertCircle, CheckCircle2, Download, Eye, FolderOpen, Search, Upload, X } from 'lucide-vue-next';
 
 type Documento = {
   id: string;
@@ -22,7 +23,11 @@ type Orden = {
   monto_total?: number | string | null;
   fecha_creacion: string;
   fecha_actualizacion: string;
+  fecha_requerida?: string | null;
+  hora_requerida?: string | null;
+  ubicacion?: string | null;
   documentos?: Documento[];
+  order_logs?: Array<{ usuario?: { personal?: { nombre_completo: string } | null; cliente?: { nombre_contacto: string } | null; correo_electronico: string } }>;
 };
 
 const ordenes = ref<Orden[]>([]);
@@ -36,16 +41,19 @@ const loadingDocs = ref(false);
 // Ventana de confirmación/pago de una orden aprobada.
 const pagoModal = ref<Orden | null>(null);
 const archivoPago = ref<File | null>(null);
+const archivoPagoInput = ref<HTMLInputElement | null>(null);
 const loadingPago = ref(false);
 const pagoMsg = ref('');
 const pagoError = ref('');
-const metodoPago = ref<'TRANSFERENCIA' | 'DEPOSITO'>('TRANSFERENCIA');
+const metodoPago = ref<'TRANSFERENCIA'>('TRANSFERENCIA');
+const pagina = ref(1);
+watch(search, () => { pagina.value = 1; });
+const confirmarEliminar = ref('');
+const eliminarCuenta = ref(3);
+let timerEliminar: ReturnType<typeof setInterval> | undefined;
 
 const estadoLabel: Record<string, string> = {
-  EN_REVISION: 'Pendiente de revisión',
-  APROBADA: 'Aprobada / Pendiente de pago',
-  EN_ENVIO: 'En envío',
-  CONCLUIDA: 'Concluida',
+  ...etiquetasEstado,
 };
 const estadoClass: Record<string, string> = {
   EN_REVISION: 'bg-amber-100 text-amber-700',
@@ -68,16 +76,40 @@ const cargarHistorial = async () => {
   }
 };
 
-onMounted(cargarHistorial);
+let refresco: ReturnType<typeof setInterval>;
+onMounted(() => {
+  cargarHistorial();
+  refresco = setInterval(async () => { try { const { data } = await api.get('/ordenes'); ordenes.value = data; if (modalOrden.value) modalOrden.value = data.find((o: Orden) => o.id === modalOrden.value?.id) || null; if (pagoModal.value) pagoModal.value = data.find((o: Orden) => o.id === pagoModal.value?.id) || null; } catch {} }, 15000);
+});
+onBeforeUnmount(() => { clearInterval(refresco); clearInterval(timerEliminar); });
 
 const ordenesFiltradas = computed(() => {
-  const term = search.value.trim().toLowerCase();
+  const term = normalizarBusqueda(search.value.trim());
   if (!term) return ordenes.value;
   return ordenes.value.filter((orden) =>
     [orden.id, orden.descripcion_equipo, orden.tipo_orden, orden.estado]
-      .some((value) => String(value).toLowerCase().includes(term)),
+      .some((value) => normalizarBusqueda(value).includes(term)),
   );
 });
+const paginasTotales = computed(() => Math.max(1, Math.ceil(ordenesFiltradas.value.length / 10)));
+const ordenesPagina = computed(() => ordenesFiltradas.value.slice((pagina.value - 1) * 10, pagina.value * 10));
+const eliminarOrden = async (orden: Orden) => {
+  if (orden.estado !== 'CONCLUIDA') return;
+  if (confirmarEliminar.value !== orden.id) {
+    confirmarEliminar.value = orden.id;
+    eliminarCuenta.value = 3;
+    clearInterval(timerEliminar);
+    timerEliminar = setInterval(() => { eliminarCuenta.value--; if (eliminarCuenta.value <= 0) clearInterval(timerEliminar); }, 1000);
+    return;
+  }
+  if (eliminarCuenta.value > 0) return;
+  try {
+    await api.delete(`/ordenes/${orden.id}`);
+    confirmarEliminar.value = '';
+    await cargarHistorial();
+    pagina.value = Math.min(pagina.value, paginasTotales.value);
+  } catch (err: any) { errorMsg.value = err.response?.data?.message || 'No fue posible eliminar la orden.'; }
+};
 
 const abrirRepositorio = async (orden: Orden) => {
   modalOrden.value = orden;
@@ -127,6 +159,7 @@ const descargarDocumento = async (documento: Documento) => {
 const abrirConfirmacionPago = async (orden: Orden) => {
   pagoModal.value = orden;
   archivoPago.value = null;
+  if (archivoPagoInput.value) archivoPagoInput.value.value = '';
   pagoMsg.value = '';
   pagoError.value = '';
   metodoPago.value = 'TRANSFERENCIA';
@@ -146,6 +179,7 @@ const cerrarConfirmacionPago = () => {
   archivoPago.value = null;
   pagoMsg.value = '';
   pagoError.value = '';
+  if (archivoPagoInput.value) archivoPagoInput.value.value = '';
 };
 
 const remisionPago = computed(() =>
@@ -161,10 +195,12 @@ const seleccionarPago = (event: Event) => {
   if (!file) return;
   if (!['application/pdf', 'image/jpeg', 'image/png'].includes(file.type)) {
     pagoError.value = 'El comprobante debe ser PDF, JPEG o PNG.';
+    input.value = '';
     return;
   }
   if (file.size > 5 * 1024 * 1024) {
     pagoError.value = 'El comprobante no puede superar los 5 MB.';
+    input.value = '';
     return;
   }
   archivoPago.value = file;
@@ -175,6 +211,7 @@ const enviarComprobantePago = async () => {
     pagoError.value = 'Adjunta un comprobante válido antes de enviarlo.';
     return;
   }
+  if (!window.confirm(`Confirma adjuntar el comprobante ${archivoPago.value.name} a la orden.`)) return;
 
   loadingPago.value = true;
   pagoMsg.value = '';
@@ -184,6 +221,7 @@ const enviarComprobantePago = async () => {
     await cargarDocumento(archivoPago.value, 'COMPROBANTE_PAGO', pagoModal.value.id);
     pagoMsg.value = 'Comprobante recibido. La empresa deberá verificarlo antes de liberar la orden a Envío.';
     archivoPago.value = null;
+    if (archivoPagoInput.value) archivoPagoInput.value.value = '';
     await cargarHistorial();
 
     const actualizada = ordenes.value.find((o) => o.id === pagoModal.value?.id);
@@ -197,9 +235,6 @@ const enviarComprobantePago = async () => {
 
 const puedePagar = (orden: Orden) =>
   orden.estado === 'APROBADA' && !orden.bloqueado_para_cliente;
-
-const formatDate = (date: string) =>
-  new Date(date).toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit', year: 'numeric' });
 
 const monto = (orden: Orden) =>
   orden.monto_total != null
@@ -223,19 +258,21 @@ const monto = (orden: Orden) =>
         <table class="w-full min-w-[900px] text-left text-xs">
           <thead><tr class="text-slate-400 border-b border-slate-100"><th class="pb-3">ID / Fecha</th><th class="pb-3">Equipo / Operación</th><th class="pb-3">Estado</th><th class="pb-3">Total</th><th class="pb-3 text-right">Acciones</th></tr></thead>
           <tbody class="divide-y divide-slate-100">
-            <tr v-for="orden in ordenesFiltradas" :key="orden.id">
-              <td class="py-4"><p class="font-bold text-blue-600">#{{ orden.id.substring(0, 8) }}</p><p class="text-[10px] text-slate-400 mt-1">{{ formatDate(orden.fecha_creacion) }}</p></td>
-              <td class="py-4 max-w-[320px]"><p class="font-semibold text-slate-800">{{ orden.descripcion_equipo }}</p><span class="inline-block mt-1 px-2 py-0.5 rounded bg-slate-100 text-slate-600 text-[10px] font-bold">{{ tipoLabel[orden.tipo_orden] }}</span></td>
-              <td class="py-4"><span :class="estadoClass[orden.estado]" class="px-2.5 py-1 rounded-full text-[10px] font-bold whitespace-nowrap">{{ estadoLabel[orden.estado] }}</span></td>
+            <tr v-for="orden in ordenesPagina" :key="orden.id">
+              <td class="py-4"><p class="font-bold text-blue-600">#{{ orden.id.substring(0, 8) }}</p><p class="text-[10px] text-slate-400 mt-1">{{ fechaHoraCDMX(orden.fecha_creacion) }}</p></td>
+              <td class="py-4 max-w-[320px]"><p class="font-semibold text-slate-800">{{ orden.descripcion_equipo }}</p><span class="inline-block mt-1 px-2 py-0.5 rounded bg-slate-100 text-slate-600 text-[10px] font-bold">{{ tipoLabel[orden.tipo_orden] }}</span><p v-if="orden.fecha_requerida" class="text-[10px] text-slate-500 mt-1">Requerido: {{ new Date(orden.fecha_requerida).toLocaleDateString('es-MX',{timeZone:'America/Mexico_City'}) }} {{ orden.hora_requerida || '' }}</p><div class="flex gap-1 mt-2" aria-label="Progreso de la orden"><span v-for="paso in ['EN_REVISION','APROBADA','EN_ENVIO','CONCLUIDA']" :key="paso" :title="estadoLabel[paso]" class="h-1.5 flex-1 rounded-full" :class="['EN_REVISION','APROBADA','EN_ENVIO','CONCLUIDA'].indexOf(paso) <= ['EN_REVISION','APROBADA','EN_ENVIO','CONCLUIDA'].indexOf(orden.estado) ? 'bg-blue-500' : 'bg-slate-200'"></span></div></td>
+              <td class="py-4"><span :class="estadoClass[orden.estado]" class="px-2.5 py-1 rounded-full text-[10px] font-bold whitespace-nowrap">{{ estadoLabel[orden.estado] }}</span><p v-if="orden.order_logs?.[0]" class="mt-1 text-[10px] text-slate-400">Responsable: {{ orden.order_logs[0].usuario?.personal?.nombre_completo || orden.order_logs[0].usuario?.cliente?.nombre_contacto || orden.order_logs[0].usuario?.correo_electronico }}</p></td>
               <td class="py-4 text-slate-600">{{ monto(orden) }}</td>
               <td class="py-4 text-right"><div class="flex justify-end gap-2">
                 <button @click="abrirRepositorio(orden)" class="inline-flex items-center px-3 py-1.5 border border-blue-200 text-blue-700 bg-blue-50 rounded-lg text-[11px] font-semibold"><Eye class="w-3.5 h-3.5 mr-1.5" /> Ver Docs</button>
                 <button v-if="puedePagar(orden)" @click="abrirConfirmacionPago(orden)" class="inline-flex items-center px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[11px] font-semibold"><CheckCircle2 class="w-3.5 h-3.5 mr-1.5" /> Confirmar y pagar</button>
+                <button v-if="orden.estado === 'CONCLUIDA'" @click="eliminarOrden(orden)" :disabled="confirmarEliminar === orden.id && eliminarCuenta > 0" class="inline-flex items-center px-3 py-1.5 border border-red-200 text-red-700 bg-red-50 rounded-lg text-[11px] font-semibold disabled:opacity-50"><X class="w-3.5 h-3.5 mr-1" />{{ confirmarEliminar === orden.id ? `Confirmar (${eliminarCuenta})` : 'Eliminar' }}</button>
               </div></td>
             </tr>
           </tbody>
         </table>
       </div>
+      <div v-if="!loading" class="flex justify-center items-center gap-2 mt-4 text-xs"><button @click="pagina = 1" :disabled="pagina === 1" class="px-2 py-1 border rounded disabled:opacity-40">&lt;&lt;</button><button @click="pagina = Math.max(1, pagina - 1)" :disabled="pagina === 1" class="px-2 py-1 border rounded disabled:opacity-40">&lt;</button><span class="font-semibold text-slate-600">{{ pagina }} / {{ paginasTotales }}</span><button @click="pagina = Math.min(paginasTotales, pagina + 1)" :disabled="pagina === paginasTotales" class="px-2 py-1 border rounded disabled:opacity-40">&gt;</button><button @click="pagina = paginasTotales" :disabled="pagina === paginasTotales" class="px-2 py-1 border rounded disabled:opacity-40">&gt;&gt;</button></div>
     </div>
 
     <!-- Repositorio documental -->
@@ -276,10 +313,7 @@ const monto = (orden: Orden) =>
 
           <div class="border border-slate-200 rounded-xl p-4">
             <h2 class="text-xs font-bold text-slate-800 mb-3">Método de pago</h2>
-            <div class="grid grid-cols-2 gap-2 mb-4"><button @click="metodoPago = 'TRANSFERENCIA'" :class="metodoPago === 'TRANSFERENCIA' ? 'bg-blue-600 text-white' : 'bg-slate-50 text-slate-600'" class="py-2 rounded-lg text-xs font-bold border border-slate-200">Transferencia</button><button @click="metodoPago = 'DEPOSITO'" :class="metodoPago === 'DEPOSITO' ? 'bg-blue-600 text-white' : 'bg-slate-50 text-slate-600'" class="py-2 rounded-lg text-xs font-bold border border-slate-200">Depósito</button></div>
-            <div v-if="metodoPago === 'TRANSFERENCIA'" class="bg-slate-50 rounded-xl p-4 text-xs space-y-1"><p><strong>Banco:</strong> Banco Nacional de Pruebas</p><p><strong>Beneficiario:</strong> Naturals & Spine System S.A. de C.V.</p><p><strong>Cuenta:</strong> 1234567890</p><p><strong>CLABE:</strong> 012345678901234567</p><p><strong>Concepto:</strong> Orden #{{ pagoModal.id.substring(0, 8) }}</p></div>
-            <div v-else class="bg-slate-50 rounded-xl p-4 text-xs space-y-1"><p><strong>Banco:</strong> Banco Nacional de Pruebas</p><p><strong>Beneficiario:</strong> Naturals & Spine System S.A. de C.V.</p><p><strong>Sucursal:</strong> 0001 - Centro</p><p><strong>Cuenta para depósito:</strong> 1234567890</p><p><strong>Referencia:</strong> NSP-{{ pagoModal.id.substring(0, 8).toUpperCase() }}</p></div>
-            <p class="text-[10px] text-amber-700 mt-3">Datos ficticios para pruebas. Serán sustituidos por los datos reales antes de cualquier uso operativo.</p>
+            <div class="bg-slate-50 rounded-xl p-4 text-xs space-y-1"><p><strong>Banco:</strong> Banco Nacional de Pruebas</p><p><strong>Beneficiario:</strong> Naturals & Spine System S.A. de C.V.</p><p><strong>Cuenta:</strong> 1234567890</p><p><strong>CLABE:</strong> 012345678901234567</p><p><strong>Concepto:</strong> Orden #{{ pagoModal.id.substring(0, 8) }}</p></div>
           </div>
 
           <div v-if="pagoMsg" class="p-3 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-xl text-xs flex gap-2"><CheckCircle2 class="w-4 h-4 shrink-0" />{{ pagoMsg }}</div>
@@ -288,8 +322,8 @@ const monto = (orden: Orden) =>
           <div class="border-t border-slate-100 pt-4">
             <h2 class="text-xs font-bold text-slate-800 mb-1">Comprobante de pago</h2>
             <p class="text-[10px] text-slate-500 mb-3">Solo se aceptan PDF, JPEG o PNG de máximo 5 MB.</p>
-            <input type="file" accept=".pdf,image/jpeg,image/png" @change="seleccionarPago" class="w-full text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-emerald-50 file:text-emerald-700" />
-            <p v-if="archivoPago" class="text-[10px] text-slate-500 mt-2">Seleccionado: {{ archivoPago.name }}</p>
+            <input ref="archivoPagoInput" type="file" accept=".pdf,image/jpeg,image/png" @change="seleccionarPago" class="w-full text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-emerald-50 file:text-emerald-700" />
+            <p v-if="archivoPago" class="text-[10px] text-slate-500 mt-2">Seleccionado: {{ archivoPago.name }} <button type="button" @click="archivoPago = null; if (archivoPagoInput) archivoPagoInput.value = ''" class="ml-2 text-red-600 underline">Quitar</button></p>
           </div>
 
           <div class="flex justify-end gap-2 pt-2"><button @click="cerrarConfirmacionPago" class="px-4 py-2 border border-slate-300 text-slate-600 rounded-lg text-xs font-semibold">Cerrar</button><button @click="enviarComprobantePago" :disabled="!archivoPago || loadingPago || !remisionPago || pagoModal.bloqueado_para_cliente" class="px-4 py-2 bg-emerald-600 text-white rounded-lg text-xs font-bold disabled:opacity-50"><Upload class="inline w-4 h-4 mr-1" />{{ loadingPago ? 'Enviando...' : 'Enviar comprobante a la empresa' }}</button></div>

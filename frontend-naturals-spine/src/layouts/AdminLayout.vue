@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import { useRouter } from 'vue-router';
 import { useAuthStore } from '../stores/auth';
+import api from '../api/axios';
+import { etiquetasEstado } from '../utils/orden';
 import { 
   LayoutDashboard, 
   Users, 
@@ -9,12 +11,31 @@ import {
   LogOut, 
   Menu, 
   X, 
-  Activity 
+  Activity,
+  Bell,
 } from 'lucide-vue-next';
 
 const router = useRouter();
 const auth = useAuthStore();
 const mobileOpen = ref(false);
+const notificacionesAbiertas = ref(false);
+const ordenesNotificacion = ref<any[]>([]);
+const leidas = ref<string[]>(JSON.parse(localStorage.getItem('admin-notificaciones-leidas') || '[]'));
+let timerNotificaciones: ReturnType<typeof setInterval>;
+const nuevasNotificaciones = computed(() => ordenesNotificacion.value.filter((n) => !leidas.value.includes(n.id)).length);
+const cargarNotificaciones = async () => { try { const { data } = await api.get('/ordenes/notificaciones'); ordenesNotificacion.value = data; } catch {} };
+const tiempoNotificacion = (fecha: string) => {
+  const minutos = Math.max(0, Math.floor((Date.now() - new Date(fecha).getTime()) / 60000));
+  return minutos < 60 ? `Hace ${minutos} min` : `Hace ${Math.floor(minutos / 60)} h`;
+};
+const seleccionarNotificacion = (orden: any) => {
+  leidas.value = Array.from(new Set([...leidas.value, orden.id])).slice(-40);
+  localStorage.setItem('admin-notificaciones-leidas', JSON.stringify(leidas.value));
+  notificacionesAbiertas.value = false;
+  router.push({ path: '/admin/ordenes', query: { orden: orden.orden.id } });
+};
+onMounted(() => { cargarNotificaciones(); timerNotificaciones = setInterval(cargarNotificaciones, 10000); });
+onBeforeUnmount(() => clearInterval(timerNotificaciones));
 
 const logout = () => {
   auth.logout();
@@ -89,6 +110,10 @@ const logout = () => {
         </button>
 
         <div class="flex items-center space-x-3 ml-auto">
+          <div class="relative">
+            <button @click="notificacionesAbiertas = !notificacionesAbiertas" aria-label="Notificaciones" class="relative p-2 text-slate-600 hover:bg-slate-100 rounded-lg"><Bell class="w-5 h-5" /><span v-if="nuevasNotificaciones" class="absolute right-1 top-1 w-2.5 h-2.5 bg-red-600 rounded-full ring-2 ring-white"></span></button>
+            <section v-if="notificacionesAbiertas" class="absolute right-0 top-full mt-2 z-[80] w-80 bg-white border border-slate-200 rounded-xl shadow-xl overflow-hidden"><header class="px-4 py-3 bg-[#0a2540] text-white text-xs font-bold">Notificaciones recientes</header><div v-if="!ordenesNotificacion.length" class="p-4 text-xs text-slate-400">No hay notificaciones.</div><button v-for="notificacion in ordenesNotificacion" :key="notificacion.id" @click="seleccionarNotificacion(notificacion)" class="w-full text-left px-4 py-3 border-b border-slate-100 hover:bg-blue-50" :class="!leidas.includes(notificacion.id) ? 'bg-blue-50/60' : ''"><span v-if="!leidas.includes(notificacion.id)" class="inline-block w-2 h-2 rounded-full bg-red-500 mr-2"></span><span class="text-xs font-semibold text-slate-800">Orden #{{ notificacion.orden.id.substring(0,8) }} · {{ notificacion.estado_anterior === notificacion.estado_nuevo ? 'Nueva solicitud' : `Estado: ${etiquetasEstado[notificacion.estado_nuevo] || notificacion.estado_nuevo}` }}</span><span class="block ml-4 text-[10px] text-slate-400 mt-1">{{ tiempoNotificacion(notificacion.fecha_cambio) }} · {{ notificacion.usuario?.personal?.nombre_completo || notificacion.usuario?.cliente?.nombre_contacto || notificacion.usuario?.correo_electronico }}</span></button></section>
+          </div>
           <div class="text-right">
             <p class="text-xs font-bold text-slate-800 leading-tight">
               {{ auth.user?.personal?.nombre_completo || 'Administrador' }}

@@ -1,4 +1,4 @@
-import { IsEnum, IsNotEmpty, IsNumber, IsOptional, IsPositive, IsString } from 'class-validator';
+import { IsDateString, IsEnum, IsNotEmpty, IsNumber, IsOptional, IsPositive, IsString, Matches } from 'class-validator';
 import { TipoOrden } from '@prisma/client';
 
 export class CrearOrdenDto {
@@ -9,6 +9,22 @@ export class CrearOrdenDto {
   @IsString()
   @IsNotEmpty()
   descripcion_equipo: string;
+
+  @IsOptional()
+  @IsDateString()
+  fecha_requerida?: string;
+
+  @IsOptional()
+  @Matches(/^([01]\d|2[0-3]):[0-5]\d$/)
+  hora_requerida?: string;
+
+  @IsOptional()
+  @IsString()
+  ubicacion?: string;
+
+  @IsOptional()
+  @IsString()
+  medico_cirujano?: string;
 
   @IsOptional()
   @IsNumber({ maxDecimalPlaces: 2 })

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import api from '../api/axios';
 import { Lock, CheckCircle2, AlertCircle, ArrowLeft, KeyRound } from 'lucide-vue-next';
@@ -13,6 +13,11 @@ const confirmPassword = ref('');
 const loading = ref(false);
 const exito = ref(false);
 const errorMsg = ref('');
+const passwordStrength = computed(() => {
+  const checks = [/[a-z]/.test(password.value), /[A-Z]/.test(password.value), /\d/.test(password.value), /[.,/@&_$-]/.test(password.value), password.value.length >= 8];
+  const score = checks.filter(Boolean).length;
+  return { score, label: !password.value ? 'Sin contraseña' : score <= 2 ? 'Débil' : score === 3 ? 'Moderada' : score === 4 ? 'Adecuada' : 'Fuerte', color: score <= 2 ? 'bg-red-500' : score === 3 ? 'bg-amber-500' : score === 4 ? 'bg-blue-500' : 'bg-emerald-500' };
+});
 
 onMounted(() => {
   const tokenQuery = route.query.token as string;
@@ -26,8 +31,8 @@ onMounted(() => {
 const handleSubmit = async () => {
   errorMsg.value = '';
 
-  if (password.value.length < 8) {
-    errorMsg.value = 'La contraseña debe tener al menos 8 caracteres.';
+  if (!/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[.,\/@&_$-])[A-Za-z\d.,\/@&_$-]{8,}$/.test(password.value)) {
+    errorMsg.value = 'Usa al menos 8 caracteres, incluyendo minúscula, mayúscula, número y un carácter permitido: . , / @ & - _ $.';
     return;
   }
 
@@ -93,10 +98,12 @@ const handleSubmit = async () => {
               type="password" 
               required 
               minlength="8" 
+              pattern="(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9])(?=.*[.,/@&_$-])[A-Za-z0-9.,/@&_$-]{8,}"
               placeholder="Mínimo 8 caracteres" 
               class="w-full pl-9 pr-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600" 
             />
           </div>
+          <div class="mt-2"><div class="h-2 rounded bg-slate-100 overflow-hidden"><div class="h-full transition-all" :class="passwordStrength.color" :style="{ width: `${passwordStrength.score * 20}%` }"></div></div><p class="text-[11px] mt-1 text-slate-500">Fortaleza: <strong>{{ passwordStrength.label }}</strong></p><p class="text-[10px] text-slate-400">Usa minúscula, mayúscula, número y uno de estos caracteres: . , / @ &amp; - _ $.</p></div>
         </div>
 
         <div>

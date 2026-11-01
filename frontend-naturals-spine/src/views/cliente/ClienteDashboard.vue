@@ -1,21 +1,26 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue';
+import { ref, onMounted, onBeforeUnmount, computed } from 'vue';
 import api from '../../api/axios';
 import { Bed, Truck, FileCheck, Bell } from 'lucide-vue-next';
+import { etiquetasEstado, fechaHoraCDMX } from '../../utils/orden';
 
 const ordenes = ref<any[]>([]);
 const loading = ref(true);
+let refresco: ReturnType<typeof setInterval>;
 
-onMounted(async () => {
+const cargarOrdenes = async (inicial = false) => {
+  if (inicial) loading.value = true;
   try {
     const { data } = await api.get('/ordenes');
     ordenes.value = data;
   } catch (err) {
-    console.error('Error al cargar órdenes del cliente:', err);
+    if (inicial) console.error('Error al cargar órdenes del cliente:', err);
   } finally {
     loading.value = false;
   }
-});
+};
+onMounted(() => { cargarOrdenes(true); refresco = setInterval(() => cargarOrdenes(), 15000); });
+onBeforeUnmount(() => clearInterval(refresco));
 
 const equiposEnRenta = computed(() => {
   return ordenes.value.filter(
@@ -102,10 +107,10 @@ const facturasListas = computed(() => {
                 No tienes solicitudes u órdenes activas en el sistema.
               </td>
             </tr>
-            <tr v-for="ord in ordenes" :key="ord.id">
+            <tr v-for="ord in ordenes.slice(0, 5)" :key="ord.id">
               <td class="py-3.5 font-bold text-blue-600 whitespace-nowrap">#{{ ord.id.substring(0, 8) }}</td>
               <td class="py-3.5 font-medium text-slate-800">{{ ord.descripcion_equipo }} ({{ ord.tipo_orden }})</td>
-              <td class="py-3.5 text-slate-500 whitespace-nowrap">{{ new Date(ord.fecha_creacion).toLocaleDateString() }}</td>
+              <td class="py-3.5 text-slate-500 whitespace-nowrap">{{ fechaHoraCDMX(ord.fecha_creacion) }}</td>
               <td class="py-3.5 text-right whitespace-nowrap">
                 <span 
                   :class="{
@@ -116,7 +121,7 @@ const facturasListas = computed(() => {
                   }"
                   class="px-2.5 py-1 rounded-full text-[10px] font-bold"
                 >
-                  {{ ord.estado }}
+                  {{ etiquetasEstado[ord.estado] || ord.estado }}
                 </span>
               </td>
             </tr>

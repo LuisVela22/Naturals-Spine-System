@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, computed, onBeforeUnmount } from 'vue';
 import { useRouter } from 'vue-router';
 import api from '../../api/axios';
+import { cargarDocumento } from '../../utils/documentos';
 import { ArrowLeft, Send, ShoppingCart, CalendarDays, Stethoscope, MapPin, CheckCircle2, AlertCircle } from 'lucide-vue-next';
 
 const router = useRouter();
@@ -9,22 +10,46 @@ const router = useRouter();
 const tipoOrden = ref<'COMPRA' | 'RENTA' | ''>('');
 const descripcionEquipo = ref('');
 const fechaRequerida = ref('');
+const horaRequerida = ref('');
 const medicoCirujano = ref('');
 const ubicacion = ref('');
 const documentoRespaldo = ref<File | null>(null);
+const documentoInput = ref<HTMLInputElement | null>(null);
 
 const loading = ref(false);
 const exito = ref(false);
 const errorMsg = ref('');
 const ordenCreada = ref('');
+const confirmarEnvio = ref(false);
+const cuentaRegresiva = ref(3);
+let temporizador: ReturnType<typeof setInterval> | undefined;
+const direccionSugerencias = ref<string[]>([]);
+let timerDireccion: ReturnType<typeof setTimeout> | undefined;
+const direccionCargando = ref(false);
+const fechaHoraVista = computed(() => `${fechaRequerida.value || 'Sin fecha'}${horaRequerida.value ? ` · ${horaRequerida.value}` : ''}`);
+
+const buscarDireccion = () => {
+  clearTimeout(timerDireccion);
+  if (ubicacion.value.trim().length < 4) { direccionSugerencias.value = []; return; }
+  timerDireccion = setTimeout(async () => {
+    direccionCargando.value = true;
+    try {
+      const params = new URLSearchParams({ q: ubicacion.value, format: 'jsonv2', addressdetails: '1', countrycodes: 'mx', limit: '5' });
+      const res = await fetch(`https://nominatim.openstreetmap.org/search?${params}`, { headers: { 'Accept-Language': 'es-MX' } });
+      direccionSugerencias.value = (await res.json()).map((x: any) => x.display_name);
+    } catch { direccionSugerencias.value = []; } finally { direccionCargando.value = false; }
+  }, 350);
+};
+const elegirDireccion = (direccion: string) => { ubicacion.value = direccion; direccionSugerencias.value = []; };
+onBeforeUnmount(() => { clearInterval(temporizador); clearTimeout(timerDireccion); });
 
 const handleFile = (event: Event) => {
   const input = event.target as HTMLInputElement;
   documentoRespaldo.value = input.files?.[0] || null;
-
-  if (documentoRespaldo.value && documentoRespaldo.value.size > 5 * 1024 * 1024) {
-    errorMsg.value = 'El documento supera el límite de 5 MB.';
+  if (documentoRespaldo.value && (documentoRespaldo.value.size > 5 * 1024 * 1024 || !['application/pdf', 'image/jpeg', 'image/png'].includes(documentoRespaldo.value.type))) {
+    errorMsg.value = 'Adjunta un PDF, JPG o PNG de máximo 5 MB.';
     documentoRespaldo.value = null;
+    input.value = '';
   }
 };
 
@@ -36,28 +61,33 @@ const handleSubmit = async () => {
     return;
   }
 
+  confirmarEnvio.value = true;
+  cuentaRegresiva.value = 3;
+  clearInterval(temporizador);
+  temporizador = setInterval(() => {
+    cuentaRegresiva.value -= 1;
+    if (cuentaRegresiva.value <= 0) clearInterval(temporizador);
+  }, 1000);
+};
+
+const enviarOrdenConfirmada = async () => {
+  if (cuentaRegresiva.value > 0) return;
+  confirmarEnvio.value = false;
   loading.value = true;
 
   try {
-    /*
-     * El DTO actual del backend solo acepta:
-     * tipo_orden, descripcion_equipo y monto_total.
-     * Para no enviar campos que NestJS rechazaría por forbidNonWhitelisted,
-     * los datos contextuales del mockup se incorporan a la descripción.
-     */
-    const contexto = [
-      `Equipo solicitado: ${descripcionEquipo.value.trim()}`,
-      fechaRequerida.value ? `Fecha requerida: ${fechaRequerida.value}` : '',
-      medicoCirujano.value ? `Médico cirujano: ${medicoCirujano.value.trim()}` : '',
-      ubicacion.value ? `Ubicación/quirófano: ${ubicacion.value.trim()}` : '',
-    ]
-      .filter(Boolean)
-      .join(' | ');
-
     const { data } = await api.post('/ordenes', {
       tipo_orden: tipoOrden.value,
-      descripcion_equipo: contexto,
+      descripcion_equipo: descripcionEquipo.value.trim(),
+      fecha_requerida: fechaRequerida.value || undefined,
+      hora_requerida: horaRequerida.value || undefined,
+      ubicacion: ubicacion.value.trim() || undefined,
+      medico_cirujano: medicoCirujano.value.trim() || undefined,
     });
+
+    if (documentoRespaldo.value) {
+      await cargarDocumento(documentoRespaldo.value, 'CONTRATO', data.id);
+    }
 
     ordenCreada.value = data.id;
     exito.value = true;
@@ -70,14 +100,17 @@ const handleSubmit = async () => {
     loading.value = false;
   }
 };
+const cancelarConfirmacion = () => { confirmarEnvio.value = false; clearInterval(temporizador); };
 
 const nuevaSolicitud = () => {
   tipoOrden.value = '';
   descripcionEquipo.value = '';
   fechaRequerida.value = '';
+  horaRequerida.value = '';
   medicoCirujano.value = '';
   ubicacion.value = '';
   documentoRespaldo.value = null;
+  if (documentoInput.value) documentoInput.value.value = '';
   ordenCreada.value = '';
   exito.value = false;
   errorMsg.value = '';
@@ -88,7 +121,7 @@ const nuevaSolicitud = () => {
   <div class="space-y-6 max-w-5xl">
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div>
-        <h1 class="text-xl font-bold text-slate-800">Registrar Orden (CU04)</h1>
+        <h1 class="text-xl font-bold text-slate-800">Registrar Orden</h1>
         <p class="text-xs text-slate-500 mt-1">
           Genera una nueva solicitud de compra o renta de equipo médico.
         </p>
@@ -112,7 +145,7 @@ const nuevaSolicitud = () => {
         <div>
           <h2 class="font-bold text-emerald-800 text-sm">Solicitud registrada correctamente</h2>
           <p class="text-xs text-emerald-700 mt-1">
-            La orden quedó en estado <strong>EN_REVISION</strong> para ser atendida por Naturals & Spine System.
+            La orden quedó <strong>En revisión</strong> para ser atendida por Naturals & Spine System.
           </p>
           <p class="text-[11px] text-emerald-700 mt-2">
             ID de orden: <strong>#{{ ordenCreada.substring(0, 8) }}</strong>
@@ -183,19 +216,6 @@ const nuevaSolicitud = () => {
 
             <div>
               <label class="block text-xs font-semibold text-slate-600 mb-1">
-                Equipo Médico Solicitado *
-              </label>
-              <input
-                v-model="descripcionEquipo"
-                required
-                type="text"
-                placeholder="Ej. Sistema de instrumentación lumbar"
-                class="w-full text-xs p-2.5 border border-slate-300 rounded-lg focus:ring-1 focus:ring-blue-600 focus:outline-none"
-              />
-            </div>
-
-            <div>
-              <label class="block text-xs font-semibold text-slate-600 mb-1">
                 Fecha Requerida
               </label>
               <div class="relative">
@@ -206,6 +226,16 @@ const nuevaSolicitud = () => {
                   class="w-full pl-9 text-xs p-2.5 border border-slate-300 rounded-lg focus:ring-1 focus:ring-blue-600 focus:outline-none"
                 />
               </div>
+            </div>
+
+            <div class="md:col-span-2">
+              <label class="block text-xs font-semibold text-slate-600 mb-1">Equipo Médico Solicitado *</label>
+              <textarea v-model="descripcionEquipo" required rows="5" placeholder="Describa el equipo médico solicitado, características y cantidad" class="w-full text-xs p-3 border border-slate-300 rounded-lg focus:ring-1 focus:ring-blue-600 focus:outline-none resize-y"></textarea>
+            </div>
+
+            <div>
+              <label class="block text-xs font-semibold text-slate-600 mb-1">Hora requerida</label>
+              <input v-model="horaRequerida" type="time" class="w-full text-xs p-2.5 border border-slate-300 rounded-lg focus:ring-1 focus:ring-blue-600 focus:outline-none" />
             </div>
 
             <div>
@@ -232,9 +262,14 @@ const nuevaSolicitud = () => {
                 <input
                   v-model="ubicacion"
                   type="text"
+                  @input="buscarDireccion"
                   placeholder="Ej. Quirófano 2, Hospital Ángeles del Sur"
                   class="w-full pl-9 text-xs p-2.5 border border-slate-300 rounded-lg focus:ring-1 focus:ring-blue-600 focus:outline-none"
                 />
+                <div v-if="direccionCargando" class="absolute z-10 top-full bg-white border rounded-lg p-2 text-xs text-slate-400 w-full">Buscando direcciones…</div>
+                <div v-else-if="direccionSugerencias.length" class="absolute z-20 top-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg w-full max-h-56 overflow-auto">
+                  <button v-for="direccion in direccionSugerencias" :key="direccion" type="button" @click="elegirDireccion(direccion)" class="block text-left w-full px-3 py-2 text-xs text-slate-700 hover:bg-blue-50">{{ direccion }}</button>
+                </div>
               </div>
             </div>
           </div>
@@ -243,18 +278,18 @@ const nuevaSolicitud = () => {
         <section class="bg-slate-50 border border-slate-200 rounded-xl p-4">
           <h2 class="text-xs font-bold text-slate-700 mb-1">Documento de respaldo</h2>
           <p class="text-[11px] text-slate-500 mb-3">
-            El mockup contempla adjuntar la orden institucional. El backend actual no define un tipo
-            documental específico para "orden de compra"; por ello esta selección se conserva como parte
-            de la interfaz, pero no se envía todavía a la API.
+            Se aceptan PDF, JPG o PNG de hasta 5 MB.
           </p>
           <input
+            ref="documentoInput"
             @change="handleFile"
             type="file"
-            accept=".pdf"
+            accept=".pdf,image/jpeg,image/png"
             class="w-full text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700"
           />
           <p v-if="documentoRespaldo" class="text-[10px] text-slate-500 mt-2">
             Seleccionado: {{ documentoRespaldo.name }}
+            <button type="button" @click="documentoRespaldo = null; if (documentoInput) documentoInput.value = ''" class="ml-2 text-red-600 underline">Quitar archivo</button>
           </p>
         </section>
 
@@ -277,5 +312,14 @@ const nuevaSolicitud = () => {
         </div>
       </div>
     </form>
+  </div>
+  <div v-if="confirmarEnvio" class="fixed inset-0 z-[70] bg-slate-900/60 flex items-center justify-center p-4">
+    <section class="bg-white rounded-2xl shadow-2xl max-w-xl w-full p-6 space-y-4">
+      <h2 class="text-base font-bold text-slate-800">Revisa tu solicitud antes de enviarla</h2>
+      <p class="text-xs text-slate-600">Verifica cuidadosamente los datos. Cancela si necesitas corregir algún campo.</p>
+      <dl class="grid grid-cols-2 gap-3 text-xs"><div><dt class="text-slate-400">Operación</dt><dd class="font-semibold">{{ tipoOrden }}</dd></div><div><dt class="text-slate-400">Fecha y hora requerida</dt><dd class="font-semibold">{{ fechaHoraVista }}</dd></div><div class="col-span-2"><dt class="text-slate-400">Equipo solicitado</dt><dd class="font-semibold whitespace-pre-wrap">{{ descripcionEquipo }}</dd></div><div><dt class="text-slate-400">Médico</dt><dd class="font-semibold">{{ medicoCirujano || 'No indicado' }}</dd></div><div><dt class="text-slate-400">Ubicación</dt><dd class="font-semibold">{{ ubicacion || 'No indicada' }}</dd></div></dl>
+      <p v-if="documentoRespaldo" class="text-xs text-slate-600">Archivo adjunto: {{ documentoRespaldo.name }}</p>
+      <div class="flex justify-end gap-2"><button type="button" @click="cancelarConfirmacion" class="px-4 py-2 border rounded-lg text-xs font-semibold">Cancelar y revisar</button><button type="button" @click="enviarOrdenConfirmada" :disabled="cuentaRegresiva > 0 || loading" class="px-4 py-2 bg-blue-600 text-white rounded-lg text-xs font-bold disabled:opacity-50">{{ loading ? 'Enviando…' : cuentaRegresiva > 0 ? `Confirmar (${cuentaRegresiva})` : 'Confirmar y enviar orden' }}</button></div>
+    </section>
   </div>
 </template>

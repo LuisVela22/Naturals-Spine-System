@@ -30,6 +30,20 @@ const files = ref<{ [key: string]: File | null }>({
 });
 
 const loading = ref(false);
+const confirmarRegistro = ref(false);
+const direccionSugerencias = ref<string[]>([]);
+let direccionTimer: ReturnType<typeof setTimeout> | undefined;
+const buscarDireccion = () => {
+  clearTimeout(direccionTimer);
+  if (form.value.direccion_fiscal.trim().length < 4) { direccionSugerencias.value = []; return; }
+  direccionTimer = setTimeout(async () => {
+    try {
+      const params = new URLSearchParams({ q: form.value.direccion_fiscal, format: 'jsonv2', countrycodes: 'mx', limit: '5' });
+      const response = await fetch(`https://nominatim.openstreetmap.org/search?${params}`, { headers: { 'Accept-Language': 'es-MX' } });
+      direccionSugerencias.value = (await response.json()).map((item: any) => item.display_name);
+    } catch { direccionSugerencias.value = []; }
+  }, 350);
+};
 const fileInputs = ref<Record<string, HTMLInputElement | null>>({ rfc: null, ine: null, domicilio: null });
 const ladaOptions = [
   { code: '+52', country: 'México', flag: '🇲🇽' },
@@ -91,7 +105,7 @@ const validForm = () => {
   form.value.correo_electronico = form.value.correo_electronico.trim().toLowerCase();
   if (!rfcRegex.test(form.value.rfc)) { errorMsg.value = 'El RFC debe tener formato válido de persona física (13) o moral (12) caracteres.'; return false; }
   if (!emailRegex.test(form.value.correo_electronico)) { errorMsg.value = 'Ingrese un correo electrónico válido.'; return false; }
-  if (!/^\d{10}$/.test(form.value.telefono)) { errorMsg.value = 'El teléfono debe contener exactamente 10 dígitos.'; return false; }
+  if (!/^\d{7,15}$/.test(form.value.telefono)) { errorMsg.value = 'El teléfono debe contener entre 7 y 15 dígitos nacionales.'; return false; }
   if (!passwordRegex.test(form.value.password)) { errorMsg.value = 'La contraseña debe tener mínimo 8 caracteres, minúscula, mayúscula, número y un carácter permitido: . , / @ & - _ $'; return false; }
   if (Object.values(files.value).some(f => !f)) { errorMsg.value = 'Adjunte los tres documentos oficiales requeridos.'; return false; }
   return true;
@@ -100,6 +114,11 @@ const validForm = () => {
 const handleSubmit = async () => {
   errorMsg.value = '';
   if (!validForm()) return;
+  confirmarRegistro.value = true;
+};
+
+const enviarRegistroConfirmado = async () => {
+  confirmarRegistro.value = false;
   loading.value = true;
   try {
     const payload = { ...form.value, telefono: `${form.value.lada}${form.value.telefono}` };
@@ -152,14 +171,14 @@ const handleSubmit = async () => {
         <div class="text-center mb-8 pb-4 border-b border-slate-100">
           <h2 class="text-2xl font-extrabold text-slate-800">Solicitud de Registro como Cliente</h2>
           <p class="text-xs text-slate-500 mt-1 max-w-xl mx-auto">
-            Complete los datos de su institución de salud. Su cuenta será validada por nuestro equipo antes de poder operar (Regla de Negocio RN01).
+            Complete los datos de su institución de salud. Nuestro equipo validará su cuenta antes de habilitar el acceso.
           </p>
         </div>
 
         <div v-if="exito" class="p-6 bg-emerald-50 border border-emerald-200 rounded-xl text-center space-y-3">
           <h3 class="text-lg font-bold text-emerald-800">Solicitud Enviada con Éxito</h3>
           <p class="text-xs text-emerald-700 leading-relaxed">
-            Su expediente ha quedado en estado <strong>PENDIENTE</strong>. Nuestro equipo administrativo revisará sus datos fiscales y se le notificará cuando su cuenta esté activada.
+            Su expediente ha quedado <strong>Pendiente</strong>. Nuestro equipo administrativo revisará sus datos fiscales y se le notificará cuando su cuenta esté activada.
           </p>
           <router-link to="/login" class="inline-block mt-3 px-4 py-2 bg-emerald-600 text-white rounded-lg text-xs font-bold shadow hover:bg-emerald-700">
             Regresar al Login
@@ -187,7 +206,7 @@ const handleSubmit = async () => {
               </div>
               <div class="md:col-span-2">
                 <label class="block text-xs font-medium text-slate-600 mb-1">Dirección Fiscal Completa *</label>
-                <input v-model="form.direccion_fiscal" required type="text" placeholder="Calle, Número, Colonia, Alcaldía/Municipio, C.P., Estado" class="w-full text-xs p-2.5 border border-slate-300 rounded-lg focus:ring-1 focus:ring-blue-600 focus:outline-none" />
+                <div class="relative"><input v-model="form.direccion_fiscal" @input="buscarDireccion" required type="text" autocomplete="street-address" placeholder="Calle, número, colonia, municipio, C.P. y estado" class="w-full text-xs p-2.5 border border-slate-300 rounded-lg focus:ring-1 focus:ring-blue-600 focus:outline-none" /><div v-if="direccionSugerencias.length" class="absolute z-20 top-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg w-full max-h-56 overflow-auto"><button v-for="direccion in direccionSugerencias" :key="direccion" type="button" @click="form.direccion_fiscal = direccion; direccionSugerencias = []" class="block text-left w-full px-3 py-2 text-xs text-slate-700 hover:bg-blue-50">{{ direccion }}</button></div></div>
               </div>
             </div>
           </div>
@@ -208,8 +227,8 @@ const handleSubmit = async () => {
               </div>
               <div>
                 <label class="block text-xs font-medium text-slate-600 mb-1">Teléfono de Contacto *</label>
-                <div class="flex gap-2"><select v-model="form.lada" aria-label="Código internacional de país" class="max-w-[190px] text-xs p-2.5 border border-slate-300 rounded-lg bg-white">
-                  <option v-for="lada in ladaOptions" :key="lada.code" :value="lada.code">{{ lada.flag }} {{ lada.code }} · {{ lada.country }}</option>
+                <div class="flex gap-2"><select v-model="form.lada" aria-label="Código internacional de país" class="w-[92px] shrink-0 text-xs p-2.5 border border-slate-300 rounded-lg bg-white">
+                  <option v-for="lada in ladaOptions" :key="lada.code" :value="lada.code">{{ lada.flag }} {{ lada.code }}</option>
                 </select>
                 <input v-model="form.telefono" required type="tel" inputmode="numeric" maxlength="15" pattern="[0-9]{7,15}" @input="form.telefono = form.telefono.replace(/\D/g, '').slice(0,15)" placeholder="Número nacional" class="w-full text-xs p-2.5 border border-slate-300 rounded-lg focus:ring-1 focus:ring-blue-600 focus:outline-none" /></div><p class="text-[10px] text-slate-400 mt-1">Selecciona el código internacional y escribe entre 7 y 15 dígitos nacionales. Solo números.</p>
               </div>
@@ -256,5 +275,13 @@ const handleSubmit = async () => {
         </form>
       </div>
     </main>
+  </div>
+  <div v-if="confirmarRegistro" class="fixed inset-0 z-[70] bg-slate-900/60 flex items-center justify-center p-4">
+    <section class="bg-white rounded-2xl shadow-2xl max-w-lg w-full p-6 space-y-4">
+      <h2 class="text-base font-bold text-slate-800">Confirma la documentación de registro</h2>
+      <p class="text-xs text-slate-600">Se enviarán los documentos oficiales seleccionados. Revisa los nombres antes de continuar.</p>
+      <ul class="text-xs text-slate-700 list-disc pl-5 space-y-1"><li v-for="(file, key) in files" :key="key">{{ key.toUpperCase() }}: {{ file?.name }}</li></ul>
+      <div class="flex justify-end gap-2"><button type="button" @click="confirmarRegistro = false" class="px-4 py-2 border rounded-lg text-xs font-semibold">Volver al formulario</button><button type="button" @click="enviarRegistroConfirmado" :disabled="loading" class="px-4 py-2 bg-blue-600 text-white rounded-lg text-xs font-bold disabled:opacity-50">{{ loading ? 'Enviando…' : 'Confirmar y enviar documentos' }}</button></div>
+    </section>
   </div>
 </template>

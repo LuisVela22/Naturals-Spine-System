@@ -93,6 +93,14 @@ model Orden {
   cliente_id             String       @db.Uuid
   tipo_orden             TipoOrden
   descripcion_equipo     String       @db.Text
+  fecha_requerida       DateTime?    @db.Timestamp()
+  hora_requerida        String?      @db.VarChar(5)
+  ubicacion             String?      @db.Text
+  detalles_renta        String?      @db.Text
+  archivo_detalles_renta String?     @db.VarChar(255)
+  aclaracion_renta_enviada Boolean  @default(false)
+  alerta_24h_enviada      Boolean  @default(false)
+  prioridad_notificada    String   @default("BAJA") @db.VarChar(10)
   estado                 EstadoOrden  @default(EN_REVISION)
   bloqueado_para_cliente Boolean      @default(false)
   notificacion_pendiente Boolean      @default(false)

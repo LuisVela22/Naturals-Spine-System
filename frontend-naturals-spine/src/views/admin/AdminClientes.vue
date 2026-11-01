@@ -154,7 +154,7 @@ const descargarDocumento = async (documento: Documento) => {
       <div>
         <h1 class="text-xl font-bold text-slate-800">Clientes / Hospitales</h1>
         <p class="text-xs text-slate-500 mt-1">
-          Revisión y validación de solicitudes institucionales (CU03).
+          Revisión y validación de solicitudes institucionales.
         </p>
       </div>
 
@@ -239,7 +239,7 @@ const descargarDocumento = async (documento: Documento) => {
                   class="inline-flex items-center px-3 py-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-lg text-[11px] font-semibold"
                 >
                   <FileText class="w-3.5 h-3.5 mr-1.5" />
-                  Validar (CU03)
+                  Validar
                 </button>
               </td>
             </tr>
