@@ -134,8 +134,13 @@ export class AuthService {
         correo: usuario.correo_electronico,
         cliente: usuario.cliente,
         personal: usuario.personal,
+        modo_oscuro: usuario.modo_oscuro,
       },
     };
+  }
+
+  async actualizarModoOscuro(usuarioId: string, modoOscuro: boolean) {
+    return this.prisma.usuario.update({ where: { id: usuarioId }, data: { modo_oscuro: modoOscuro }, select: { modo_oscuro: true } });
   }
 
   async solicitarRecuperacionPassword(correo: string) {

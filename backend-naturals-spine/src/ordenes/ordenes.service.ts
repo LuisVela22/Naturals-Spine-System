@@ -4,14 +4,10 @@ import { NotificacionesService } from '../notificaciones/notificaciones.service'
 import { CrearOrdenDto } from './dto/crear-orden.dto';
 import { CambiarEstadoOrdenDto } from './dto/cambiar-estado-orden.dto';
 import { EstadoOrden, EstadoValidacion, Rol, TipoDocumento } from '@prisma/client';
-import { Storage } from '@google-cloud/storage';
-import { promises as fs } from 'fs';
-import * as path from 'path';
 import { DocumentosService } from '../documentos/documentos.service';
 
 @Injectable()
 export class OrdenesService {
-  private readonly storage = new Storage();
   constructor(
     private prisma: PrismaService,
     private notificacionesService: NotificacionesService,
@@ -33,9 +29,8 @@ export class OrdenesService {
           fecha_requerida: dto.fecha_requerida ? new Date(`${dto.fecha_requerida}T12:00:00-06:00`) : null,
           hora_requerida: dto.hora_requerida,
           ubicacion: dto.ubicacion,
-          descripcion_equipo: dto.medico_cirujano?.trim()
-            ? `${dto.descripcion_equipo.trim()}\nMédico cirujano: ${dto.medico_cirujano.trim()}`
-            : dto.descripcion_equipo,
+          descripcion_equipo: dto.descripcion_equipo.trim(),
+          responsable_recepcion: dto.responsable_recepcion?.trim() || dto.medico_cirujano?.trim(),
           monto_total: dto.monto_total,
           estado: EstadoOrden.EN_REVISION,
         },
@@ -84,6 +79,7 @@ export class OrdenesService {
       [EstadoOrden.APROBADA]: [EstadoOrden.EN_ENVIO, EstadoOrden.CONCLUIDA],
       [EstadoOrden.EN_ENVIO]: [EstadoOrden.CONCLUIDA],
       [EstadoOrden.CONCLUIDA]: [],
+      [EstadoOrden.CANCELADA]: [],
     };
 
     if (!transicionesValidas[estadoActual].includes(nuevoEstado)) {
@@ -120,10 +116,30 @@ export class OrdenesService {
       throw new BadRequestException('No se puede concluir la orden sin factura o remisión vinculada.');
     }
 
+    const rechazoDefinitivo = nuevoEstado === EstadoOrden.CONCLUIDA && estadoActual !== EstadoOrden.EN_ENVIO;
+    if (rechazoDefinitivo) {
+      await this.notificacionesService.enviarCambioEstadoOrden(
+        orden.cliente.usuario.correo_electronico,
+        orden.cliente.razon_social,
+        { ...orden, estado: EstadoOrden.CONCLUIDA },
+        estadoActual,
+        EstadoOrden.CONCLUIDA,
+        comentario,
+      );
+      await this.eliminarOrdenPermanente(ordenId);
+      return { id: ordenId, estado: EstadoOrden.CONCLUIDA, eliminado: true };
+    }
+
     const ordenActualizada = await this.prisma.$transaction(async (tx) => {
       const actualizada = await tx.orden.update({
         where: { id: ordenId },
-        data: { estado: nuevoEstado, notificacion_pendiente: true, alerta_24h_enviada: false },
+        data: {
+          estado: nuevoEstado,
+          notificacion_pendiente: true,
+          alerta_24h_enviada: false,
+          ultima_alerta_sin_cambio: null,
+          ...(nuevoEstado === EstadoOrden.CONCLUIDA ? { concluida_en: new Date() } : {}),
+        },
       });
 
       await tx.orderLog.create({
@@ -156,9 +172,10 @@ export class OrdenesService {
   async consultarHistorial(usuario: any) {
     if (usuario.rol === Rol.ADMIN) {
       return this.prisma.orden.findMany({
+        where: { oculta_admin: false },
         include: {
           cliente: true,
-          order_logs: { orderBy: { fecha_cambio: 'desc' }, take: 1, include: { usuario: { select: { personal: { select: { nombre_completo: true } }, cliente: { select: { nombre_contacto: true } }, correo_electronico: true } } } },
+          order_logs: { orderBy: { fecha_cambio: 'asc' }, include: { usuario: { select: { rol: true, personal: { select: { nombre_completo: true } }, cliente: { select: { nombre_contacto: true } }, correo_electronico: true } } } },
           documentos: true,
         },
         orderBy: { fecha_creacion: 'desc' },
@@ -169,9 +186,9 @@ export class OrdenesService {
     if (!cliente) throw new NotFoundException('Cliente no localizado');
 
     return this.prisma.orden.findMany({
-      where: { cliente_id: cliente.id },
+      where: { cliente_id: cliente.id, oculta_cliente: false },
       include: {
-        order_logs: { orderBy: { fecha_cambio: 'desc' }, take: 1, include: { usuario: { select: { personal: { select: { nombre_completo: true } }, cliente: { select: { nombre_contacto: true } }, correo_electronico: true } } } },
+        order_logs: { orderBy: { fecha_cambio: 'asc' }, include: { usuario: { select: { rol: true, personal: { select: { nombre_completo: true } }, cliente: { select: { nombre_contacto: true } }, correo_electronico: true } } } },
         documentos: true,
       },
       orderBy: { fecha_creacion: 'desc' },
@@ -180,10 +197,10 @@ export class OrdenesService {
 
   async consultarNotificaciones() {
     return this.prisma.orderLog.findMany({
-      take: 10,
+      take: 8,
       orderBy: { fecha_cambio: 'desc' },
       include: {
-        orden: { select: { id: true, tipo_orden: true, descripcion_equipo: true } },
+        orden: { select: { id: true, tipo_orden: true, descripcion_equipo: true, cliente: { select: { razon_social: true } } } },
         usuario: { select: { correo_electronico: true, personal: { select: { nombre_completo: true } }, cliente: { select: { nombre_contacto: true } } } },
       },
     });
@@ -195,29 +212,49 @@ export class OrdenesService {
       include: { documentos: true, cliente: true },
     });
     if (!orden) throw new NotFoundException('Orden no encontrada');
-    if (orden.estado !== EstadoOrden.CONCLUIDA) {
-      throw new BadRequestException('Solo se pueden eliminar órdenes concluidas.');
+    if (orden.estado === EstadoOrden.CANCELADA && usuario.rol === Rol.ADMIN) {
+      await this.eliminarOrdenPermanente(ordenId);
+      return { eliminado: true };
     }
+    if (orden.estado !== EstadoOrden.CONCLUIDA) throw new BadRequestException('Solo se pueden archivar órdenes concluidas con el plazo de retención cumplido.');
     if (usuario.rol !== Rol.ADMIN) {
       const cliente = await this.prisma.clienteInstitucional.findUnique({ where: { usuario_id: usuario.id } });
       if (!cliente || cliente.id !== orden.cliente_id) throw new ForbiddenException('No tienes acceso a esta orden.');
     }
 
-    const localDir = path.resolve(process.env.LOCAL_STORAGE_DIR || path.join(process.cwd(), 'storage', 'documentos'));
-    const bucket = this.storage.bucket(process.env.GCP_STORAGE_BUCKET_NAME || 'naturals-spine-docs-bucket');
-    await Promise.all(orden.documentos.map(async (doc) => {
-      try {
-        if (doc.url_gcs.startsWith('local/')) {
-          await fs.unlink(path.join(localDir, path.basename(doc.url_gcs)));
-        } else {
-          await bucket.file(doc.url_gcs).delete({ ignoreNotFound: true });
-        }
-      } catch {
-        // La eliminación de la orden no debe dejarse a medias por un objeto ya ausente.
-      }
-    }));
+    const concluidaEn = orden.concluida_en || orden.fecha_actualizacion;
+    const dosAnios = new Date(); dosAnios.setFullYear(dosAnios.getFullYear() - 2);
+    if (concluidaEn > dosAnios) throw new BadRequestException('La orden debe cumplir dos años desde su conclusión antes de archivarse.');
+    const archivada = usuario.rol === Rol.ADMIN
+      ? await this.prisma.orden.update({ where: { id: ordenId }, data: { oculta_admin: true }, select: { oculta_cliente: true, oculta_admin: true } })
+      : await this.prisma.orden.update({ where: { id: ordenId }, data: { oculta_cliente: true }, select: { oculta_cliente: true, oculta_admin: true } });
+    if (archivada.oculta_cliente && archivada.oculta_admin) { await this.eliminarOrdenPermanente(ordenId); return { eliminado: true }; }
+    return { eliminado: false, archivada: true };
+  }
+
+  async cancelarPorCliente(ordenId: string, usuarioId: string) {
+    const orden = await this.prisma.orden.findUnique({ where: { id: ordenId }, include: { cliente: true, documentos: true } });
+    if (!orden) throw new NotFoundException('Orden no encontrada');
+    const cliente = await this.prisma.clienteInstitucional.findUnique({ where: { usuario_id: usuarioId } });
+    if (!cliente || cliente.id !== orden.cliente_id) throw new ForbiddenException('No tienes acceso a esta orden.');
+    const tienePago = orden.documentos.some((doc) => doc.tipo_documento === TipoDocumento.COMPROBANTE_PAGO);
+    if (tienePago || orden.bloqueado_para_cliente || (orden.estado !== EstadoOrden.EN_REVISION && orden.estado !== EstadoOrden.APROBADA)) {
+      throw new BadRequestException('La orden ya no se puede cancelar después de enviar el comprobante de pago.');
+    }
+    const actualizada = await this.prisma.$transaction(async (tx) => {
+      const cancelada = await tx.orden.update({ where: { id: ordenId }, data: { estado: EstadoOrden.CANCELADA, oculta_cliente: true } });
+      await tx.orderLog.create({ data: { orden_id: ordenId, usuario_id: usuarioId, estado_anterior: orden.estado, estado_nuevo: EstadoOrden.CANCELADA, comentario: 'Cancelada por el cliente institucional.' } });
+      return cancelada;
+    });
+    await this.notificacionesService.notificarPersonalOrdenCancelada(actualizada, cliente.razon_social).catch(() => undefined);
+    return actualizada;
+  }
+
+  private async eliminarOrdenPermanente(ordenId: string) {
+    const orden = await this.prisma.orden.findUnique({ where: { id: ordenId }, include: { documentos: { select: { url_gcs: true } } } });
+    if (!orden) return;
+    await this.documentosService.eliminarArchivos(orden.documentos);
     await this.prisma.orden.delete({ where: { id: ordenId } });
-    return { eliminado: true };
   }
 
   async enviarAclaracionRenta(ordenId: string, usuarioId: string, detalles: string, file?: { originalname: string; mimetype: string; size: number; buffer: Buffer }) {

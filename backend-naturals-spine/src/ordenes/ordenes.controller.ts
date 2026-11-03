@@ -45,6 +45,12 @@ export class OrdenesController {
     return this.ordenesService.eliminarConcluida(id, req.user);
   }
 
+  @Post(':id/cancelar')
+  @Roles(Rol.CLIENTE)
+  cancelar(@Param('id') id: string, @Req() req: any) {
+    return this.ordenesService.cancelarPorCliente(id, req.user.id);
+  }
+
   @Post(':id/aclaracion-renta')
   @Roles(Rol.ADMIN)
   @UseInterceptors(FileInterceptor('file'))

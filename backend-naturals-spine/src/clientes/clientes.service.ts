@@ -3,12 +3,14 @@ import { PrismaService } from '../prisma/prisma.service';
 import { NotificacionesService } from '../notificaciones/notificaciones.service';
 import { ValidarClienteDto } from './dto/validar-cliente.dto';
 import { EstadoValidacion } from '@prisma/client';
+import { DocumentosService } from '../documentos/documentos.service';
 
 @Injectable()
 export class ClientesService {
   constructor(
     private prisma: PrismaService,
     private notificaciones: NotificacionesService,
+    private documentos: DocumentosService,
   ) {}
 
   async listarPendientes() {
@@ -35,6 +37,13 @@ export class ClientesService {
       throw new BadRequestException('Es obligatorio documentar el motivo del rechazo');
     }
 
+    if (dto.estado_validacion === EstadoValidacion.RECHAZADO) {
+      void this.notificaciones.enviarNotificacionRechazo(cliente.usuario.correo_electronico, cliente.razon_social, dto.motivo_rechazo!).catch(() => undefined);
+      await this.documentos.eliminarDocumentosCliente(cliente.id);
+      await this.prisma.usuario.delete({ where: { id: cliente.usuario_id } });
+      return { eliminado: true, cliente_id: clienteId };
+    }
+
     const clienteActualizado = await this.prisma.$transaction(async (tx) => {
       const cli = await tx.clienteInstitucional.update({
         where: { id: clienteId },
@@ -54,14 +63,7 @@ export class ClientesService {
       return cli;
     });
 
-    // Envío del correo en segundo plano
-    if (dto.estado_validacion === EstadoValidacion.RECHAZADO) {
-      this.notificaciones.enviarNotificacionRechazo(
-        cliente.usuario.correo_electronico,
-        cliente.razon_social,
-        dto.motivo_rechazo!,
-      );
-    } else if (dto.estado_validacion === EstadoValidacion.APROBADO) {
+    if (dto.estado_validacion === EstadoValidacion.APROBADO) {
       this.notificaciones.enviarNotificacionAprobacion(
         cliente.usuario.correo_electronico,
         cliente.razon_social,

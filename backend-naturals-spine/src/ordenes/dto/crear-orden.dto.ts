@@ -27,6 +27,10 @@ export class CrearOrdenDto {
   medico_cirujano?: string;
 
   @IsOptional()
+  @IsString()
+  responsable_recepcion?: string;
+
+  @IsOptional()
   @IsNumber({ maxDecimalPlaces: 2 })
   @IsPositive()
   monto_total?: number;

@@ -28,6 +28,7 @@ enum EstadoOrden {
   APROBADA
   EN_ENVIO
   CONCLUIDA
+  CANCELADA
 }
 
 enum TipoDocumento {
@@ -46,6 +47,7 @@ model Usuario {
   password_hash      String                @db.VarChar(255)
   rol                Rol
   activo             Boolean               @default(false)
+  modo_oscuro        Boolean?
   creado_en          DateTime              @default(now()) @db.Timestamp()
 
   cliente            ClienteInstitucional?
@@ -93,6 +95,7 @@ model Orden {
   cliente_id             String       @db.Uuid
   tipo_orden             TipoOrden
   descripcion_equipo     String       @db.Text
+  responsable_recepcion  String?      @db.VarChar(255)
   fecha_requerida       DateTime?    @db.Timestamp()
   hora_requerida        String?      @db.VarChar(5)
   ubicacion             String?      @db.Text
@@ -101,6 +104,10 @@ model Orden {
   aclaracion_renta_enviada Boolean  @default(false)
   alerta_24h_enviada      Boolean  @default(false)
   prioridad_notificada    String   @default("BAJA") @db.VarChar(10)
+  ultima_alerta_sin_cambio DateTime? @db.Timestamp()
+  concluida_en           DateTime?  @db.Timestamp()
+  oculta_cliente         Boolean    @default(false)
+  oculta_admin           Boolean    @default(false)
   estado                 EstadoOrden  @default(EN_REVISION)
   bloqueado_para_cliente Boolean      @default(false)
   notificacion_pendiente Boolean      @default(false)

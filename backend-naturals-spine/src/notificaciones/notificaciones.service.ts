@@ -43,7 +43,7 @@ export class NotificacionesService implements OnModuleInit {
 
   async procesarAlertasPendientes() {
     const vencimiento = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const ordenes = await this.prisma.orden.findMany({ where: { estado: { not: 'CONCLUIDA' }, alerta_24h_enviada: false, fecha_actualizacion: { lte: vencimiento } }, include: { cliente: true } });
+    const ordenes = await this.prisma.orden.findMany({ where: { estado: { notIn: ['CONCLUIDA', 'CANCELADA'] }, fecha_actualizacion: { lte: vencimiento }, OR: [{ ultima_alerta_sin_cambio: null }, { ultima_alerta_sin_cambio: { lte: vencimiento } }] }, include: { cliente: true } });
     const personal = await this.prisma.personalEmpresa.findMany({ include: { usuario: true } });
     const destinatarios = personal.map((p) => p.usuario.correo_electronico).filter(Boolean).join(',');
     if (!destinatarios) return { procesadas: 0 };
@@ -51,10 +51,10 @@ export class NotificacionesService implements OnModuleInit {
       const html = this.plantillaCorreo('Seguimiento de orden pendiente', `<p>La orden <strong>#${orden.id}</strong> de <strong>${this.escapeHtml(orden.cliente.razon_social)}</strong> no ha tenido cambios de estado durante más de 24 horas.</p><p>Estado actual: ${this.etiquetaEstado(orden.estado)}</p><p>Revise la orden desde el panel de gestión.</p>`);
       try {
         await this.enviarMail(destinatarios, `Revisar orden sin cambios por 24 horas #${orden.id}`, html);
-        await this.prisma.orden.update({ where: { id: orden.id }, data: { alerta_24h_enviada: true } });
+        await this.prisma.orden.update({ where: { id: orden.id }, data: { alerta_24h_enviada: true, ultima_alerta_sin_cambio: new Date() } });
       } catch (error: any) { this.logger.error(`No se pudo enviar alerta de orden ${orden.id}: ${error.message}`); }
     }
-    const conFecha = await this.prisma.orden.findMany({ where: { estado: { not: 'CONCLUIDA' }, fecha_requerida: { not: null } }, include: { cliente: true } });
+    const conFecha = await this.prisma.orden.findMany({ where: { estado: { notIn: ['CONCLUIDA', 'CANCELADA'] }, fecha_requerida: { not: null } }, include: { cliente: true } });
     let prioridadesNotificadas = 0;
     for (const orden of conFecha) {
       const prioridad = this.calcularPrioridad(orden.fecha_requerida!);
@@ -93,6 +93,14 @@ export class NotificacionesService implements OnModuleInit {
     if (!destinatarios.length) return;
     const html = this.plantillaCorreo('Comprobante de pago recibido', `<p>El cliente <strong>${this.escapeHtml(orden.cliente.razon_social)}</strong> adjuntó un comprobante para la orden <strong>#${orden.id}</strong>.</p><p>Revise el archivo desde el panel de gestión para confirmar el pago.</p><p><strong>Fecha y hora:</strong> ${this.fechaHoraCDMX(new Date())}</p>`);
     return this.enviarMail(destinatarios.join(','), `Comprobante recibido para la orden #${orden.id} - Naturals & Spine`, html);
+  }
+
+  async notificarPersonalOrdenCancelada(orden: any, razonSocial: string) {
+    const personal = await this.prisma.personalEmpresa.findMany({ include: { usuario: true } });
+    const destinatarios = personal.map((p) => p.usuario.correo_electronico).filter(Boolean);
+    if (!destinatarios.length) return;
+    const html = this.plantillaCorreo('Orden cancelada por el cliente', `<p>La institución <strong>${this.escapeHtml(razonSocial)}</strong> canceló su solicitud de equipo.</p><div style="background:#f8fafc;padding:16px;border-radius:8px"><p><strong>Orden:</strong> #${orden.id}</p><p><strong>Operación:</strong> ${orden.tipo_orden === 'RENTA' ? 'Renta' : 'Compra'}</p><p><strong>Equipo:</strong> ${this.escapeHtml(orden.descripcion_equipo)}</p><p><strong>Fecha y hora:</strong> ${this.fechaHoraCDMX(new Date())}</p></div><p>La solicitud quedó disponible en Control de Órdenes para su archivo.</p>`);
+    return this.enviarMail(destinatarios.join(','), `Orden cancelada por el cliente #${orden.id} - Naturals & Spine`, html);
   }
 
   async enviarNotificacionRechazo(destinatario: string, razonSocial: string, motivo: string) {
@@ -142,6 +150,7 @@ export class NotificacionesService implements OnModuleInit {
       APROBADA: 'La empresa aceptó la orden y adjunta la remisión correspondiente. Revise el documento y los detalles de pago desde su cuenta.',
       EN_ENVIO: 'El pago fue verificado y la orden se encuentra en proceso de envío.',
       CONCLUIDA: comentario ? `La orden fue concluida.` : 'La orden fue concluida por el personal de la empresa.',
+      CANCELADA: 'El cliente canceló la solicitud de orden.',
     };
     const docs = (orden.documentos || []).filter((d: any) =>
       ['REMISION', 'FACTURA'].includes(d.tipo_documento) &&
@@ -179,7 +188,7 @@ export class NotificacionesService implements OnModuleInit {
   }
 
   private etiquetaEstado(estado: string) {
-    return ({ EN_REVISION: 'En revisión', APROBADA: 'Aprobada', EN_ENVIO: 'En envío', CONCLUIDA: 'Concluida' } as Record<string, string>)[estado] || estado;
+    return ({ EN_REVISION: 'En revisión', APROBADA: 'Aprobada', EN_ENVIO: 'En envío', CONCLUIDA: 'Concluida', CANCELADA: 'Cancelada' } as Record<string, string>)[estado] || estado;
   }
   private fechaHoraCDMX(fecha: Date | string) { return new Intl.DateTimeFormat('es-MX', { timeZone: 'America/Mexico_City', dateStyle: 'long', timeStyle: 'short' }).format(new Date(fecha)); }
   private escapeHtml(value: string) { return String(value || '').replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!); }

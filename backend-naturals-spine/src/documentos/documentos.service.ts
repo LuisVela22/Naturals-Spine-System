@@ -38,6 +38,24 @@ export class DocumentosService {
     }
   }
 
+  async eliminarArchivos(documentos: Array<{ url_gcs: string }>) {
+    const localDir = this.localStorageDir();
+    await Promise.all(documentos.map(async (doc) => {
+      try {
+        if (doc.url_gcs.startsWith('local/')) await fs.unlink(path.join(localDir, path.basename(doc.url_gcs)));
+        else await this.storage.bucket(this.bucketName).file(doc.url_gcs).delete({ ignoreNotFound: true });
+      } catch (error: any) {
+        if (error?.code !== 'ENOENT' && error?.code !== 404) throw error;
+      }
+    }));
+  }
+
+  async eliminarDocumentosCliente(clienteId: string) {
+    const documentos = await this.prisma.documento.findMany({ where: { cliente_id: clienteId }, select: { id: true, url_gcs: true } });
+    await this.eliminarArchivos(documentos);
+    await this.prisma.documento.deleteMany({ where: { cliente_id: clienteId } });
+  }
+
   private validateRole(usuario: { rol: Rol }, dto: VincularDocumentoDto) {
     if (
       (dto.tipo_documento === TipoDocumento.FACTURA || dto.tipo_documento === TipoDocumento.REMISION) &&
@@ -164,7 +182,7 @@ export class DocumentosService {
 
       if (effectiveDto.orden_id) {
         const orden = await tx.orden.findUnique({ where: { id: effectiveDto.orden_id }, select: { estado: true } });
-        if (orden) await tx.orderLog.create({ data: { orden_id: effectiveDto.orden_id, usuario_id: usuario.id, estado_anterior: orden.estado, estado_nuevo: orden.estado, comentario: `Se adjuntó el documento ${effectiveDto.nombre_archivo}.` } });
+        if (orden) await tx.orderLog.create({ data: { orden_id: effectiveDto.orden_id, usuario_id: usuario.id, estado_anterior: orden.estado, estado_nuevo: orden.estado, comentario: effectiveDto.tipo_documento === TipoDocumento.COMPROBANTE_PAGO ? 'Se adjuntó comprobante de pago.' : `Se adjuntó ${effectiveDto.tipo_documento.toLowerCase()}.` } });
       }
 
       return documento;
@@ -203,7 +221,7 @@ export class DocumentosService {
 
       if (dto.orden_id) {
         const orden = await tx.orden.findUnique({ where: { id: dto.orden_id }, select: { estado: true } });
-        if (orden) await tx.orderLog.create({ data: { orden_id: dto.orden_id, usuario_id: usuarioId, estado_anterior: orden.estado, estado_nuevo: orden.estado, comentario: `Se adjuntó el documento ${dto.nombre_archivo}.` } });
+        if (orden) await tx.orderLog.create({ data: { orden_id: dto.orden_id, usuario_id: usuarioId, estado_anterior: orden.estado, estado_nuevo: orden.estado, comentario: dto.tipo_documento === TipoDocumento.COMPROBANTE_PAGO ? 'Se adjuntó comprobante de pago.' : `Se adjuntó ${dto.tipo_documento.toLowerCase()}.` } });
       }
 
       return documento;

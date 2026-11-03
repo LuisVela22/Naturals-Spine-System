@@ -1,4 +1,5 @@
-import { Controller, Post, Body, HttpCode, HttpStatus, UseInterceptors, UploadedFiles, BadRequestException } from '@nestjs/common';
+import { Controller, Post, Patch, Body, HttpCode, HttpStatus, UseInterceptors, UploadedFiles, BadRequestException, UseGuards, Req } from '@nestjs/common';
+import { AuthGuard } from '@nestjs/passport';
 import { AnyFilesInterceptor } from '@nestjs/platform-express';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
@@ -38,5 +39,11 @@ export class AuthController {
     @Body('password') password: string,
   ) {
     return this.authService.restablecerPassword(token, password);
+  }
+
+  @Patch('modo-oscuro')
+  @UseGuards(AuthGuard('jwt'))
+  actualizarModoOscuro(@Req() req: any, @Body('modo_oscuro') modoOscuro: boolean) {
+    return this.authService.actualizarModoOscuro(req.user.id, Boolean(modoOscuro));
   }
 }
