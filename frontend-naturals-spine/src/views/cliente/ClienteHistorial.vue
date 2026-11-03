@@ -2,7 +2,7 @@
 import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue';
 import api from '../../api/axios';
 import { cargarDocumento } from '../../utils/documentos';
-import { etiquetasEstado, fechaHoraCDMX, normalizarBusqueda } from '../../utils/orden';
+import { etiquetasEstado, fechaHoraCDMX, normalizarBusqueda, separarDetalleEquipo } from '../../utils/orden';
 import { AlertCircle, CheckCircle2, Download, Eye, FolderOpen, Search, Upload, X } from 'lucide-vue-next';
 
 type Documento = {
@@ -18,16 +18,18 @@ type Orden = {
   id: string;
   tipo_orden: 'COMPRA' | 'RENTA';
   descripcion_equipo: string;
-  estado: 'EN_REVISION' | 'APROBADA' | 'EN_ENVIO' | 'CONCLUIDA';
+  estado: 'EN_REVISION' | 'APROBADA' | 'EN_ENVIO' | 'CONCLUIDA' | 'CANCELADA';
   bloqueado_para_cliente: boolean;
   monto_total?: number | string | null;
   fecha_creacion: string;
   fecha_actualizacion: string;
+  concluida_en?: string | null;
+  responsable_recepcion?: string | null;
   fecha_requerida?: string | null;
   hora_requerida?: string | null;
   ubicacion?: string | null;
   documentos?: Documento[];
-  order_logs?: Array<{ usuario?: { personal?: { nombre_completo: string } | null; cliente?: { nombre_contacto: string } | null; correo_electronico: string } }>;
+  order_logs?: Array<{ estado_anterior: string; estado_nuevo: string; usuario?: { rol?: string; personal?: { nombre_completo: string } | null; cliente?: { nombre_contacto: string } | null; correo_electronico: string } }>;
 };
 
 const ordenes = ref<Orden[]>([]);
@@ -48,8 +50,9 @@ const pagoError = ref('');
 const metodoPago = ref<'TRANSFERENCIA'>('TRANSFERENCIA');
 const pagina = ref(1);
 watch(search, () => { pagina.value = 1; });
-const confirmarEliminar = ref('');
+const ordenEliminar = ref<Orden | null>(null);
 const eliminarCuenta = ref(3);
+const cancelandoOrden = ref('');
 let timerEliminar: ReturnType<typeof setInterval> | undefined;
 
 const estadoLabel: Record<string, string> = {
@@ -60,8 +63,10 @@ const estadoClass: Record<string, string> = {
   APROBADA: 'bg-blue-100 text-blue-700',
   EN_ENVIO: 'bg-sky-100 text-sky-700',
   CONCLUIDA: 'bg-emerald-100 text-emerald-700',
+  CANCELADA: 'bg-slate-100 text-slate-700',
 };
 const tipoLabel: Record<string, string> = { COMPRA: 'Compra', RENTA: 'Renta' };
+const documentoLabel = (tipo: string) => tipo === 'CONTRATO' ? 'ORDEN_DE_REFERENCIA' : tipo.replaceAll('_', ' ');
 
 const cargarHistorial = async () => {
   loading.value = true;
@@ -87,28 +92,39 @@ const ordenesFiltradas = computed(() => {
   const term = normalizarBusqueda(search.value.trim());
   if (!term) return ordenes.value;
   return ordenes.value.filter((orden) =>
-    [orden.id, orden.descripcion_equipo, orden.tipo_orden, orden.estado]
+    [orden.id, orden.descripcion_equipo, orden.tipo_orden, orden.estado, estadoLabel[orden.estado]]
       .some((value) => normalizarBusqueda(value).includes(term)),
   );
 });
 const paginasTotales = computed(() => Math.max(1, Math.ceil(ordenesFiltradas.value.length / 10)));
 const ordenesPagina = computed(() => ordenesFiltradas.value.slice((pagina.value - 1) * 10, pagina.value * 10));
-const eliminarOrden = async (orden: Orden) => {
-  if (orden.estado !== 'CONCLUIDA') return;
-  if (confirmarEliminar.value !== orden.id) {
-    confirmarEliminar.value = orden.id;
-    eliminarCuenta.value = 3;
-    clearInterval(timerEliminar);
-    timerEliminar = setInterval(() => { eliminarCuenta.value--; if (eliminarCuenta.value <= 0) clearInterval(timerEliminar); }, 1000);
-    return;
-  }
-  if (eliminarCuenta.value > 0) return;
-  try {
-    await api.delete(`/ordenes/${orden.id}`);
-    confirmarEliminar.value = '';
-    await cargarHistorial();
-    pagina.value = Math.min(pagina.value, paginasTotales.value);
-  } catch (err: any) { errorMsg.value = err.response?.data?.message || 'No fue posible eliminar la orden.'; }
+const responsableUltimoCambio = (orden: Orden) => [...(orden.order_logs || [])].reverse().find((log) => log.usuario?.rol === 'ADMIN' && log.estado_anterior !== log.estado_nuevo)?.usuario?.personal?.nombre_completo || '';
+const cumpleRetencion = (orden: Orden) => {
+  if (orden.estado !== 'CONCLUIDA') return false;
+  const fecha = new Date(orden.concluida_en || orden.fecha_actualizacion);
+  const limite = new Date(); limite.setFullYear(limite.getFullYear() - 2);
+  return fecha <= limite;
+};
+const puedeCancelar = (orden: Orden) => ['EN_REVISION', 'APROBADA'].includes(orden.estado) && !orden.bloqueado_para_cliente && !orden.documentos?.some((doc) => doc.tipo_documento === 'COMPROBANTE_PAGO');
+const iniciarEliminacion = (orden: Orden) => {
+  if (!cumpleRetencion(orden)) return;
+  ordenEliminar.value = orden; eliminarCuenta.value = 3; clearInterval(timerEliminar);
+  timerEliminar = setInterval(() => { eliminarCuenta.value--; if (eliminarCuenta.value <= 0) clearInterval(timerEliminar); }, 1000);
+};
+const cancelarEliminacion = () => { clearInterval(timerEliminar); ordenEliminar.value = null; eliminarCuenta.value = 3; };
+const eliminarOrden = async () => {
+  const orden = ordenEliminar.value;
+  if (!orden || eliminarCuenta.value > 0) return;
+  try { await api.delete(`/ordenes/${orden.id}`); cancelarEliminacion(); await cargarHistorial(); pagina.value = Math.min(pagina.value, paginasTotales.value); }
+  catch (err: any) { errorMsg.value = err.response?.data?.message || 'No fue posible archivar la orden.'; cancelarEliminacion(); }
+};
+const cancelarOrden = async (orden: Orden) => {
+  if (!puedeCancelar(orden)) return;
+  if (!window.confirm(`¿Deseas cancelar la orden #${orden.id.slice(0, 8)}? La empresa recibirá una notificación.`)) return;
+  cancelandoOrden.value = orden.id;
+  try { await api.post(`/ordenes/${orden.id}/cancelar`); await cargarHistorial(); }
+  catch (err: any) { errorMsg.value = err.response?.data?.message || 'No fue posible cancelar la orden.'; }
+  finally { cancelandoOrden.value = ''; }
 };
 
 const abrirRepositorio = async (orden: Orden) => {
@@ -256,17 +272,17 @@ const monto = (orden: Orden) =>
       <div v-else-if="!ordenesFiltradas.length" class="py-10 text-center text-xs text-slate-400"><FolderOpen class="w-8 h-8 mx-auto text-slate-300 mb-2" />No se encontraron órdenes.</div>
       <div v-else class="overflow-x-auto">
         <table class="w-full min-w-[900px] text-left text-xs">
-          <thead><tr class="text-slate-400 border-b border-slate-100"><th class="pb-3">ID / Fecha</th><th class="pb-3">Equipo / Operación</th><th class="pb-3">Estado</th><th class="pb-3">Total</th><th class="pb-3 text-right">Acciones</th></tr></thead>
+          <thead><tr class="text-slate-400 border-b border-slate-100"><th class="pb-3">ID / Fecha</th><th class="pb-3">Equipo / Operación</th><th class="pb-3">Estado</th><th class="pb-3 text-right">Acciones</th></tr></thead>
           <tbody class="divide-y divide-slate-100">
             <tr v-for="orden in ordenesPagina" :key="orden.id">
               <td class="py-4"><p class="font-bold text-blue-600">#{{ orden.id.substring(0, 8) }}</p><p class="text-[10px] text-slate-400 mt-1">{{ fechaHoraCDMX(orden.fecha_creacion) }}</p></td>
-              <td class="py-4 max-w-[320px]"><p class="font-semibold text-slate-800">{{ orden.descripcion_equipo }}</p><span class="inline-block mt-1 px-2 py-0.5 rounded bg-slate-100 text-slate-600 text-[10px] font-bold">{{ tipoLabel[orden.tipo_orden] }}</span><p v-if="orden.fecha_requerida" class="text-[10px] text-slate-500 mt-1">Requerido: {{ new Date(orden.fecha_requerida).toLocaleDateString('es-MX',{timeZone:'America/Mexico_City'}) }} {{ orden.hora_requerida || '' }}</p><div class="flex gap-1 mt-2" aria-label="Progreso de la orden"><span v-for="paso in ['EN_REVISION','APROBADA','EN_ENVIO','CONCLUIDA']" :key="paso" :title="estadoLabel[paso]" class="h-1.5 flex-1 rounded-full" :class="['EN_REVISION','APROBADA','EN_ENVIO','CONCLUIDA'].indexOf(paso) <= ['EN_REVISION','APROBADA','EN_ENVIO','CONCLUIDA'].indexOf(orden.estado) ? 'bg-blue-500' : 'bg-slate-200'"></span></div></td>
-              <td class="py-4"><span :class="estadoClass[orden.estado]" class="px-2.5 py-1 rounded-full text-[10px] font-bold whitespace-nowrap">{{ estadoLabel[orden.estado] }}</span><p v-if="orden.order_logs?.[0]" class="mt-1 text-[10px] text-slate-400">Responsable: {{ orden.order_logs[0].usuario?.personal?.nombre_completo || orden.order_logs[0].usuario?.cliente?.nombre_contacto || orden.order_logs[0].usuario?.correo_electronico }}</p></td>
-              <td class="py-4 text-slate-600">{{ monto(orden) }}</td>
+              <td class="py-4 max-w-[320px]"><p class="font-semibold text-slate-800 whitespace-pre-line">{{ separarDetalleEquipo(orden.descripcion_equipo, orden.responsable_recepcion).equipo }}</p><p v-if="separarDetalleEquipo(orden.descripcion_equipo, orden.responsable_recepcion).responsable" class="text-[10px] text-slate-500 mt-1">Responsable de recibir: {{ separarDetalleEquipo(orden.descripcion_equipo, orden.responsable_recepcion).responsable }}</p><span class="inline-block mt-1 px-2 py-0.5 rounded bg-slate-100 text-slate-600 text-[10px] font-bold">{{ tipoLabel[orden.tipo_orden] }}</span><p v-if="orden.fecha_requerida" class="text-[10px] text-slate-500 mt-1">Requerido: {{ new Date(orden.fecha_requerida).toLocaleDateString('es-MX',{timeZone:'America/Mexico_City'}) }} {{ orden.hora_requerida || '' }}</p><div class="flex gap-1 mt-2" aria-label="Progreso de la orden"><span v-for="paso in ['EN_REVISION','APROBADA','EN_ENVIO','CONCLUIDA']" :key="paso" :title="estadoLabel[paso]" class="h-1.5 flex-1 rounded-full" :class="['EN_REVISION','APROBADA','EN_ENVIO','CONCLUIDA'].indexOf(paso) <= ['EN_REVISION','APROBADA','EN_ENVIO','CONCLUIDA'].indexOf(orden.estado) ? 'bg-blue-500' : 'bg-slate-200'"></span><span v-if="orden.estado === 'CANCELADA'" class="h-1.5 flex-1 rounded-full bg-slate-500" :title="estadoLabel.CANCELADA"></span></div></td>
+              <td class="py-4"><span :class="estadoClass[orden.estado]" class="px-2.5 py-1 rounded-full text-[10px] font-bold whitespace-nowrap">{{ estadoLabel[orden.estado] }}</span><p v-if="responsableUltimoCambio(orden)" class="mt-1 text-[10px] text-slate-400">Responsable: {{ responsableUltimoCambio(orden) }}</p></td>
               <td class="py-4 text-right"><div class="flex justify-end gap-2">
                 <button @click="abrirRepositorio(orden)" class="inline-flex items-center px-3 py-1.5 border border-blue-200 text-blue-700 bg-blue-50 rounded-lg text-[11px] font-semibold"><Eye class="w-3.5 h-3.5 mr-1.5" /> Ver Docs</button>
                 <button v-if="puedePagar(orden)" @click="abrirConfirmacionPago(orden)" class="inline-flex items-center px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[11px] font-semibold"><CheckCircle2 class="w-3.5 h-3.5 mr-1.5" /> Confirmar y pagar</button>
-                <button v-if="orden.estado === 'CONCLUIDA'" @click="eliminarOrden(orden)" :disabled="confirmarEliminar === orden.id && eliminarCuenta > 0" class="inline-flex items-center px-3 py-1.5 border border-red-200 text-red-700 bg-red-50 rounded-lg text-[11px] font-semibold disabled:opacity-50"><X class="w-3.5 h-3.5 mr-1" />{{ confirmarEliminar === orden.id ? `Confirmar (${eliminarCuenta})` : 'Eliminar' }}</button>
+                <button v-if="puedeCancelar(orden)" @click="cancelarOrden(orden)" :disabled="cancelandoOrden === orden.id" class="inline-flex items-center px-3 py-1.5 border border-amber-200 text-amber-800 bg-amber-50 rounded-lg text-[11px] font-semibold disabled:opacity-50">{{ cancelandoOrden === orden.id ? 'Cancelando…' : 'Cancelar orden' }}</button>
+                <button v-if="cumpleRetencion(orden)" @click="iniciarEliminacion(orden)" class="inline-flex items-center px-3 py-1.5 border border-red-200 text-red-700 bg-red-50 rounded-lg text-[11px] font-semibold"><X class="w-3.5 h-3.5 mr-1" />Archivar</button>
               </div></td>
             </tr>
           </tbody>
@@ -280,12 +296,12 @@ const monto = (orden: Orden) =>
       <div class="bg-white rounded-2xl shadow-2xl w-full max-w-xl max-h-[90vh] overflow-y-auto">
         <div class="bg-blue-600 text-white px-5 py-4 flex justify-between items-center"><div><p class="text-xs font-bold">Repositorio de la Orden</p><p class="text-[10px] text-blue-100">#{{ modalOrden.id.substring(0, 8) }}</p></div><button @click="cerrarRepositorio"><X class="w-5 h-5" /></button></div>
         <div class="p-5 space-y-5">
-          <div class="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-xl p-3">{{ modalOrden.descripcion_equipo }}</div>
+          <div class="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-xl p-3"><p class="whitespace-pre-line">{{ separarDetalleEquipo(modalOrden.descripcion_equipo, modalOrden.responsable_recepcion).equipo }}</p><p v-if="separarDetalleEquipo(modalOrden.descripcion_equipo, modalOrden.responsable_recepcion).responsable" class="mt-2 text-[11px] text-slate-500">Responsable de recibir: {{ separarDetalleEquipo(modalOrden.descripcion_equipo, modalOrden.responsable_recepcion).responsable }}</p></div>
           <div><h2 class="text-xs font-bold text-slate-800 mb-3">Documentación disponible</h2>
             <div v-if="loadingDocs" class="py-5 text-center text-xs text-slate-400">Consultando documentos...</div>
             <div v-else-if="!documentos.length" class="py-5 text-center text-xs text-slate-400 border border-dashed border-slate-200 rounded-xl">No hay documentos vinculados.</div>
             <div v-else class="space-y-2">
-              <div v-for="doc in documentos" :key="doc.id" class="flex items-center justify-between gap-3 border border-slate-200 rounded-xl p-3"><div class="min-w-0"><p class="text-xs font-semibold text-slate-700 truncate">{{ doc.nombre_archivo }}</p><p class="text-[10px] text-slate-400">{{ doc.tipo_documento }} · {{ Math.ceil(doc.tamano_bytes / 1024) }} KB</p></div><button @click="descargarDocumento(doc)" class="px-3 py-1.5 bg-blue-50 text-blue-700 rounded-lg text-[11px] font-semibold"><Download class="inline w-3.5 h-3.5 mr-1" /> Descargar</button></div>
+              <div v-for="doc in documentos" :key="doc.id" class="flex items-center justify-between gap-3 border border-slate-200 rounded-xl p-3"><div class="min-w-0"><p class="text-xs font-semibold text-slate-700 truncate">{{ doc.nombre_archivo }}</p><p class="text-[10px] text-slate-400">{{ documentoLabel(doc.tipo_documento) }} · {{ Math.ceil(doc.tamano_bytes / 1024) }} KB</p></div><button @click="descargarDocumento(doc)" class="px-3 py-1.5 bg-blue-50 text-blue-700 rounded-lg text-[11px] font-semibold"><Download class="inline w-3.5 h-3.5 mr-1" /> Descargar</button></div>
             </div>
           </div>
           <div class="flex justify-end"><button @click="cerrarRepositorio" class="px-4 py-2 bg-slate-800 text-white rounded-lg text-xs font-semibold">Cerrar</button></div>
@@ -301,7 +317,7 @@ const monto = (orden: Orden) =>
           <div class="bg-blue-50 border border-blue-200 rounded-xl p-4"><p class="text-xs font-bold text-blue-800">La empresa aceptó tu solicitud</p><p class="text-[11px] text-blue-700 mt-1">Revisa la remisión, verifica el total y realiza el pago mediante uno de los métodos indicados.</p></div>
 
           <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div class="bg-slate-50 rounded-xl p-3 sm:col-span-2"><p class="text-[10px] text-slate-400">Equipo / solicitud</p><p class="text-xs font-semibold text-slate-800 mt-1">{{ pagoModal.descripcion_equipo }}</p></div>
+            <div class="bg-slate-50 rounded-xl p-3 sm:col-span-2"><p class="text-[10px] text-slate-400">Equipo / solicitud</p><p class="text-xs font-semibold text-slate-800 mt-1 whitespace-pre-line">{{ separarDetalleEquipo(pagoModal.descripcion_equipo, pagoModal.responsable_recepcion).equipo }}</p><p v-if="separarDetalleEquipo(pagoModal.descripcion_equipo, pagoModal.responsable_recepcion).responsable" class="text-[10px] text-slate-500 mt-1">Responsable de recibir: {{ separarDetalleEquipo(pagoModal.descripcion_equipo, pagoModal.responsable_recepcion).responsable }}</p></div>
             <div class="bg-emerald-50 rounded-xl p-3"><p class="text-[10px] text-emerald-700">Total</p><p class="text-sm font-extrabold text-emerald-800 mt-1">{{ monto(pagoModal) }}</p></div>
           </div>
 
@@ -331,4 +347,5 @@ const monto = (orden: Orden) =>
       </div>
     </div>
   </div>
+  <div v-if="ordenEliminar" class="fixed inset-0 z-[90] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4"><section class="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 space-y-4"><h2 class="text-base font-bold text-slate-800">Archivar orden del historial</h2><p class="text-xs text-slate-600">¿Estás seguro de ocultar la orden <strong>#{{ ordenEliminar.id.slice(0, 8) }}</strong> de tu historial? La información se conservará hasta que ambas partes la archiven.</p><div class="flex justify-end gap-2"><button @click="cancelarEliminacion" class="px-4 py-2 border rounded-lg text-xs font-semibold">Cancelar</button><button @click="eliminarOrden" :disabled="eliminarCuenta > 0" class="px-4 py-2 bg-red-600 text-white rounded-lg text-xs font-bold disabled:opacity-50">{{ eliminarCuenta > 0 ? `Confirmar (${eliminarCuenta})` : 'Confirmar archivo' }}</button></div></section></div>
 </template>

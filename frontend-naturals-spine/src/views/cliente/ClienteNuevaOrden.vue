@@ -11,7 +11,7 @@ const tipoOrden = ref<'COMPRA' | 'RENTA' | ''>('');
 const descripcionEquipo = ref('');
 const fechaRequerida = ref('');
 const horaRequerida = ref('');
-const medicoCirujano = ref('');
+const responsableRecibir = ref('');
 const ubicacion = ref('');
 const documentoRespaldo = ref<File | null>(null);
 const documentoInput = ref<HTMLInputElement | null>(null);
@@ -56,8 +56,8 @@ const handleFile = (event: Event) => {
 const handleSubmit = async () => {
   errorMsg.value = '';
 
-  if (!tipoOrden.value || !descripcionEquipo.value.trim()) {
-    errorMsg.value = 'Completa el tipo de operación y la descripción del equipo.';
+  if (!tipoOrden.value || !descripcionEquipo.value.trim() || !fechaRequerida.value || !horaRequerida.value || !ubicacion.value.trim()) {
+    errorMsg.value = 'Completa el tipo de operación, equipo, fecha, hora y ubicación requeridos.';
     return;
   }
 
@@ -82,7 +82,7 @@ const enviarOrdenConfirmada = async () => {
       fecha_requerida: fechaRequerida.value || undefined,
       hora_requerida: horaRequerida.value || undefined,
       ubicacion: ubicacion.value.trim() || undefined,
-      medico_cirujano: medicoCirujano.value.trim() || undefined,
+      responsable_recepcion: responsableRecibir.value.trim() || undefined,
     });
 
     if (documentoRespaldo.value) {
@@ -107,7 +107,7 @@ const nuevaSolicitud = () => {
   descripcionEquipo.value = '';
   fechaRequerida.value = '';
   horaRequerida.value = '';
-  medicoCirujano.value = '';
+  responsableRecibir.value = '';
   ubicacion.value = '';
   documentoRespaldo.value = null;
   if (documentoInput.value) documentoInput.value.value = '';
@@ -214,40 +214,31 @@ const nuevaSolicitud = () => {
               </select>
             </div>
 
-            <div>
-              <label class="block text-xs font-semibold text-slate-600 mb-1">
-                Fecha Requerida
-              </label>
-              <div class="relative">
-                <CalendarDays class="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
-                <input
-                  v-model="fechaRequerida"
-                  type="date"
-                  class="w-full pl-9 text-xs p-2.5 border border-slate-300 rounded-lg focus:ring-1 focus:ring-blue-600 focus:outline-none"
-                />
-              </div>
-            </div>
-
             <div class="md:col-span-2">
               <label class="block text-xs font-semibold text-slate-600 mb-1">Equipo Médico Solicitado *</label>
               <textarea v-model="descripcionEquipo" required rows="5" placeholder="Describa el equipo médico solicitado, características y cantidad" class="w-full text-xs p-3 border border-slate-300 rounded-lg focus:ring-1 focus:ring-blue-600 focus:outline-none resize-y"></textarea>
             </div>
 
             <div>
-              <label class="block text-xs font-semibold text-slate-600 mb-1">Hora requerida</label>
-              <input v-model="horaRequerida" type="time" class="w-full text-xs p-2.5 border border-slate-300 rounded-lg focus:ring-1 focus:ring-blue-600 focus:outline-none" />
+              <label class="block text-xs font-semibold text-slate-600 mb-1">Fecha Requerida *</label>
+              <div class="relative"><CalendarDays class="absolute left-3 top-2.5 w-4 h-4 text-slate-400" /><input v-model="fechaRequerida" type="date" required class="w-full pl-9 text-xs p-2.5 border border-slate-300 rounded-lg focus:ring-1 focus:ring-blue-600 focus:outline-none" /></div>
+            </div>
+
+            <div>
+              <label class="block text-xs font-semibold text-slate-600 mb-1">Hora requerida *</label>
+              <input v-model="horaRequerida" type="time" required class="w-full text-xs p-2.5 border border-slate-300 rounded-lg focus:ring-1 focus:ring-blue-600 focus:outline-none" />
             </div>
 
             <div>
               <label class="block text-xs font-semibold text-slate-600 mb-1">
-                Médico Cirujano (Opcional)
+                Responsable de recibir el equipo
               </label>
               <div class="relative">
                 <Stethoscope class="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
                 <input
-                  v-model="medicoCirujano"
+                  v-model="responsableRecibir"
                   type="text"
-                  placeholder="Nombre del cirujano"
+                  placeholder="Nombre de quien recibirá el equipo"
                   class="w-full pl-9 text-xs p-2.5 border border-slate-300 rounded-lg focus:ring-1 focus:ring-blue-600 focus:outline-none"
                 />
               </div>
@@ -255,15 +246,16 @@ const nuevaSolicitud = () => {
 
             <div class="md:col-span-2">
               <label class="block text-xs font-semibold text-slate-600 mb-1">
-                Ubicación / Quirófano (Opcional)
+                Ubicación *
               </label>
               <div class="relative">
                 <MapPin class="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
                 <input
                   v-model="ubicacion"
                   type="text"
+                  required
                   @input="buscarDireccion"
-                  placeholder="Ej. Quirófano 2, Hospital Ángeles del Sur"
+                  placeholder="Dirección de entrega del equipo"
                   class="w-full pl-9 text-xs p-2.5 border border-slate-300 rounded-lg focus:ring-1 focus:ring-blue-600 focus:outline-none"
                 />
                 <div v-if="direccionCargando" class="absolute z-10 top-full bg-white border rounded-lg p-2 text-xs text-slate-400 w-full">Buscando direcciones…</div>
@@ -317,7 +309,7 @@ const nuevaSolicitud = () => {
     <section class="bg-white rounded-2xl shadow-2xl max-w-xl w-full p-6 space-y-4">
       <h2 class="text-base font-bold text-slate-800">Revisa tu solicitud antes de enviarla</h2>
       <p class="text-xs text-slate-600">Verifica cuidadosamente los datos. Cancela si necesitas corregir algún campo.</p>
-      <dl class="grid grid-cols-2 gap-3 text-xs"><div><dt class="text-slate-400">Operación</dt><dd class="font-semibold">{{ tipoOrden }}</dd></div><div><dt class="text-slate-400">Fecha y hora requerida</dt><dd class="font-semibold">{{ fechaHoraVista }}</dd></div><div class="col-span-2"><dt class="text-slate-400">Equipo solicitado</dt><dd class="font-semibold whitespace-pre-wrap">{{ descripcionEquipo }}</dd></div><div><dt class="text-slate-400">Médico</dt><dd class="font-semibold">{{ medicoCirujano || 'No indicado' }}</dd></div><div><dt class="text-slate-400">Ubicación</dt><dd class="font-semibold">{{ ubicacion || 'No indicada' }}</dd></div></dl>
+      <dl class="grid grid-cols-2 gap-3 text-xs"><div><dt class="text-slate-400">Operación</dt><dd class="font-semibold">{{ tipoOrden }}</dd></div><div><dt class="text-slate-400">Fecha y hora requerida</dt><dd class="font-semibold">{{ fechaHoraVista }}</dd></div><div class="col-span-2"><dt class="text-slate-400">Equipo solicitado</dt><dd class="font-semibold whitespace-pre-wrap">{{ descripcionEquipo }}</dd></div><div><dt class="text-slate-400">Responsable de recibir</dt><dd class="font-semibold">{{ responsableRecibir || 'No indicado' }}</dd></div><div><dt class="text-slate-400">Ubicación</dt><dd class="font-semibold">{{ ubicacion }}</dd></div></dl>
       <p v-if="documentoRespaldo" class="text-xs text-slate-600">Archivo adjunto: {{ documentoRespaldo.name }}</p>
       <div class="flex justify-end gap-2"><button type="button" @click="cancelarConfirmacion" class="px-4 py-2 border rounded-lg text-xs font-semibold">Cancelar y revisar</button><button type="button" @click="enviarOrdenConfirmada" :disabled="cuentaRegresiva > 0 || loading" class="px-4 py-2 bg-blue-600 text-white rounded-lg text-xs font-bold disabled:opacity-50">{{ loading ? 'Enviando…' : cuentaRegresiva > 0 ? `Confirmar (${cuentaRegresiva})` : 'Confirmar y enviar orden' }}</button></div>
     </section>

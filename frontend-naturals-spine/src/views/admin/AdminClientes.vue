@@ -170,10 +170,7 @@ const descargarDocumento = async (documento: Documento) => {
     </div>
 
     <div class="bg-blue-50 border border-blue-100 rounded-xl p-3 text-[11px] text-blue-800">
-      <strong>Nota:</strong> el backend actual expone únicamente las instituciones
-      pendientes mediante <code>/clientes/pendientes</code>. Por ello esta vista funciona
-      como bandeja de validación; todavía no existe un endpoint para listar todo el directorio
-      de clientes aprobados/rechazados.
+      <strong>Antes de aprobar:</strong> confirma que la razón social y el RFC coincidan con la constancia fiscal vigente; verifica la identidad y facultades del representante con su identificación oficial; revisa que el comprobante de domicilio corresponda a la institución y que el teléfono y correo institucional sean verificables. Si hay diferencias, solicita aclaración antes de habilitar la cuenta.
     </div>
 
     <div

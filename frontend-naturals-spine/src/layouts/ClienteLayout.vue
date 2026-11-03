@@ -2,6 +2,7 @@
 import { ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { useAuthStore } from '../stores/auth';
+import { useDarkMode } from '../utils/useDarkMode';
 import { 
   LayoutDashboard, 
   PlusCircle, 
@@ -9,11 +10,14 @@ import {
   LogOut, 
   Menu, 
   X,
-  Activity
+  Activity,
+  Moon,
+  Sun
 } from 'lucide-vue-next';
 
 const router = useRouter();
 const auth = useAuthStore();
+const { activado: modoOscuro, alternar: alternarModoOscuro } = useDarkMode();
 const mobileOpen = ref(false);
 
 const logout = () => {
@@ -89,6 +93,7 @@ const logout = () => {
         </button>
 
         <div class="flex items-center space-x-3 ml-auto">
+          <button @click="alternarModoOscuro" :aria-pressed="modoOscuro" aria-label="Cambiar modo oscuro" class="p-2 rounded-lg hover:bg-slate-100 text-slate-600" :class="modoOscuro ? 'bg-slate-200 text-blue-700' : ''"><Sun v-if="modoOscuro" class="w-5 h-5" /><Moon v-else class="w-5 h-5" /></button>
           <div class="text-right">
             <p class="text-xs font-bold text-slate-800 leading-tight">
               {{ auth.user?.cliente?.razon_social || 'Hospital Cliente' }}

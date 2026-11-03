@@ -2,7 +2,7 @@
 import { ref, onMounted, onBeforeUnmount, computed } from 'vue';
 import api from '../../api/axios';
 import { Bed, Truck, FileCheck, Bell } from 'lucide-vue-next';
-import { etiquetasEstado, fechaHoraCDMX } from '../../utils/orden';
+import { etiquetasEstado, fechaHoraCDMX, separarDetalleEquipo } from '../../utils/orden';
 
 const ordenes = ref<any[]>([]);
 const loading = ref(true);
@@ -38,6 +38,7 @@ const facturasListas = computed(() => {
     return total + docsFactura.length;
   }, 0);
 });
+const responsableEstado = (orden: any) => [...(orden.order_logs || [])].reverse().find((log: any) => log.usuario?.rol === 'ADMIN' && log.estado_anterior !== log.estado_nuevo)?.usuario?.personal?.nombre_completo || '';
 </script>
 
 <template>
@@ -109,7 +110,7 @@ const facturasListas = computed(() => {
             </tr>
             <tr v-for="ord in ordenes.slice(0, 5)" :key="ord.id">
               <td class="py-3.5 font-bold text-blue-600 whitespace-nowrap">#{{ ord.id.substring(0, 8) }}</td>
-              <td class="py-3.5 font-medium text-slate-800">{{ ord.descripcion_equipo }} ({{ ord.tipo_orden }})</td>
+              <td class="py-3.5 font-medium text-slate-800"><p class="whitespace-pre-line">{{ separarDetalleEquipo(ord.descripcion_equipo, ord.responsable_recepcion).equipo }}</p><p v-if="separarDetalleEquipo(ord.descripcion_equipo, ord.responsable_recepcion).responsable" class="mt-1 text-[10px] text-slate-500">Responsable de recibir: {{ separarDetalleEquipo(ord.descripcion_equipo, ord.responsable_recepcion).responsable }}</p><span class="inline-block mt-1 px-2 py-0.5 rounded bg-slate-100 text-slate-600 text-[10px] font-bold">{{ ord.tipo_orden === 'RENTA' ? 'Renta' : 'Compra' }}</span></td>
               <td class="py-3.5 text-slate-500 whitespace-nowrap">{{ fechaHoraCDMX(ord.fecha_creacion) }}</td>
               <td class="py-3.5 text-right whitespace-nowrap">
                 <span 
@@ -117,12 +118,14 @@ const facturasListas = computed(() => {
                     'bg-amber-100 text-amber-700': ord.estado === 'EN_REVISION',
                     'bg-blue-100 text-blue-700': ord.estado === 'APROBADA',
                     'bg-sky-100 text-sky-700': ord.estado === 'EN_ENVIO',
-                    'bg-emerald-100 text-emerald-700': ord.estado === 'CONCLUIDA'
+                    'bg-emerald-100 text-emerald-700': ord.estado === 'CONCLUIDA',
+                    'bg-slate-100 text-slate-700': ord.estado === 'CANCELADA'
                   }"
                   class="px-2.5 py-1 rounded-full text-[10px] font-bold"
                 >
                   {{ etiquetasEstado[ord.estado] || ord.estado }}
                 </span>
+                <span v-if="responsableEstado(ord)" class="block mt-1 text-[10px] text-slate-400">Responsable: {{ responsableEstado(ord) }}</span>
               </td>
             </tr>
           </tbody>

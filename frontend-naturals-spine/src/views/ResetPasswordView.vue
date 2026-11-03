@@ -2,6 +2,7 @@
 import { ref, onMounted, computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import api from '../api/axios';
+import { evaluarFortaleza } from '../utils/passwordStrength';
 import { Lock, CheckCircle2, AlertCircle, ArrowLeft, KeyRound } from 'lucide-vue-next';
 
 const route = useRoute();
@@ -13,11 +14,7 @@ const confirmPassword = ref('');
 const loading = ref(false);
 const exito = ref(false);
 const errorMsg = ref('');
-const passwordStrength = computed(() => {
-  const checks = [/[a-z]/.test(password.value), /[A-Z]/.test(password.value), /\d/.test(password.value), /[.,/@&_$-]/.test(password.value), password.value.length >= 8];
-  const score = checks.filter(Boolean).length;
-  return { score, label: !password.value ? 'Sin contraseña' : score <= 2 ? 'Débil' : score === 3 ? 'Moderada' : score === 4 ? 'Adecuada' : 'Fuerte', color: score <= 2 ? 'bg-red-500' : score === 3 ? 'bg-amber-500' : score === 4 ? 'bg-blue-500' : 'bg-emerald-500' };
-});
+const passwordStrength = computed(() => evaluarFortaleza(password.value));
 
 onMounted(() => {
   const tokenQuery = route.query.token as string;

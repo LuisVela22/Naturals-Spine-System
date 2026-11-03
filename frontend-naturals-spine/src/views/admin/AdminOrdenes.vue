@@ -3,7 +3,7 @@ import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import api from '../../api/axios';
 import { cargarDocumento } from '../../utils/documentos';
-import { etiquetasEstado, fechaHoraCDMX, normalizarBusqueda } from '../../utils/orden';
+import { etiquetasEstado, fechaHoraCDMX, normalizarBusqueda, prioridadOrden, separarDetalleEquipo } from '../../utils/orden';
 import {
   AlertCircle,
   CheckCircle2,
@@ -28,12 +28,16 @@ type Orden = {
   id: string;
   tipo_orden: 'COMPRA' | 'RENTA';
   descripcion_equipo: string;
-  estado: 'EN_REVISION' | 'APROBADA' | 'EN_ENVIO' | 'CONCLUIDA';
+  estado: 'EN_REVISION' | 'APROBADA' | 'EN_ENVIO' | 'CONCLUIDA' | 'CANCELADA';
   monto_total?: number | string | null;
   fecha_creacion: string;
+  fecha_actualizacion: string;
+  concluida_en?: string | null;
+  oculta_admin?: boolean;
+  responsable_recepcion?: string | null;
   cliente?: { id: string; razon_social: string; rfc: string; nombre_contacto: string };
   documentos?: Documento[];
-  order_logs?: Array<{ usuario?: { personal?: { nombre_completo: string } | null; cliente?: { nombre_contacto: string } | null; correo_electronico: string } }>;
+  order_logs?: Array<{ estado_anterior: string; estado_nuevo: string; fecha_cambio: string; comentario?: string | null; usuario?: { rol: string; personal?: { nombre_completo: string } | null; correo_electronico: string } }>;
   fecha_requerida?: string | null;
   hora_requerida?: string | null;
   ubicacion?: string | null;
@@ -60,8 +64,8 @@ const opcionDetallesRenta = ref<'SIN_DETALLES' | 'CON_DETALLES'>('SIN_DETALLES')
 const pagina = ref(1);
 const reloj = ref(Date.now());
 watch(search, () => { pagina.value = 1; });
-const eliminarId = ref('');
 const eliminarCuenta = ref(3);
+const ordenEliminar = ref<Orden | null>(null);
 let timerEliminar: ReturnType<typeof setInterval> | undefined;
 
 const estadoLabel: Record<string, string> = {
@@ -73,9 +77,11 @@ const estadoClass: Record<string, string> = {
   APROBADA: 'bg-blue-100 text-blue-700',
   EN_ENVIO: 'bg-sky-100 text-sky-700',
   CONCLUIDA: 'bg-emerald-100 text-emerald-700',
+  CANCELADA: 'bg-slate-100 text-slate-700',
 };
 
 const documentos = computed(() => modalOrden.value?.documentos || []);
+const etiquetaDocumento = (tipo: string) => tipo === 'CONTRATO' ? 'ORDEN_DE_REFERENCIA' : tipo.replaceAll('_', ' ');
 const remision = computed(() => documentos.value.find((d) => d.tipo_documento === 'REMISION'));
 const comprobantePago = computed(() => documentos.value.find((d) => d.tipo_documento === 'COMPROBANTE_PAGO'));
 
@@ -112,23 +118,32 @@ const ordenesFiltradas = computed(() => {
   const term = normalizarBusqueda(search.value.trim());
   if (!term) return ordenes.value;
   return ordenes.value.filter((orden) =>
-    [orden.id, orden.descripcion_equipo, orden.tipo_orden, orden.estado, orden.cliente?.razon_social || '', orden.cliente?.rfc || '']
+    [orden.id, orden.descripcion_equipo, orden.tipo_orden, orden.estado, estadoLabel[orden.estado], orden.cliente?.razon_social || '', orden.cliente?.rfc || '']
       .some((value) => normalizarBusqueda(value).includes(term)),
   );
 });
 const paginasTotales = computed(() => Math.max(1, Math.ceil(ordenesFiltradas.value.length / 10)));
 const ordenesPagina = computed(() => ordenesFiltradas.value.slice((pagina.value - 1) * 10, pagina.value * 10));
-const prioridad = (orden: any) => {
-  if (!orden.fecha_requerida) return { color: 'bg-slate-300', etiqueta: 'Sin fecha' };
-  const dias = (new Date(orden.fecha_requerida).getTime() - reloj.value) / 86400000;
-  return dias > 7 ? { color: 'bg-emerald-500', etiqueta: 'Baja' } : dias >= 3 ? { color: 'bg-amber-400', etiqueta: 'Media' } : { color: 'bg-red-600', etiqueta: 'Alta' };
+const prioridad = (orden: Orden) => prioridadOrden(orden.fecha_requerida, orden.hora_requerida, orden.estado, reloj.value);
+const cumpleRetencion = (orden: Orden) => {
+  if (orden.estado !== 'CONCLUIDA') return false;
+  const concluida = new Date(orden.concluida_en || orden.fecha_actualizacion);
+  const limite = new Date(); limite.setFullYear(limite.getFullYear() - 2);
+  return concluida <= limite;
 };
-const eliminarOrden = async (orden: Orden) => {
-  if (orden.estado !== 'CONCLUIDA') return;
-  if (eliminarId.value !== orden.id) { eliminarId.value = orden.id; eliminarCuenta.value = 3; clearInterval(timerEliminar); timerEliminar = setInterval(() => { eliminarCuenta.value--; if (eliminarCuenta.value <= 0) clearInterval(timerEliminar); }, 1000); return; }
-  if (eliminarCuenta.value > 0) return;
-  try { await api.delete(`/ordenes/${orden.id}`); eliminarId.value = ''; await cargarOrdenes(); pagina.value = Math.min(pagina.value, paginasTotales.value); }
-  catch (err: any) { errorMsg.value = err.response?.data?.message || 'No fue posible eliminar la orden.'; }
+const responsableEstado = (orden: Orden) => [...(orden.order_logs || [])].reverse().find((log) => log.usuario?.rol === 'ADMIN' && log.estado_anterior !== log.estado_nuevo)?.usuario?.personal?.nombre_completo || '';
+const detalleEquipo = (orden: Orden) => separarDetalleEquipo(orden.descripcion_equipo, orden.responsable_recepcion);
+const solicitarEliminarOrden = async (orden: Orden) => {
+  if (orden.estado === 'CANCELADA') { await eliminarOrdenConfirmada(orden); return; }
+  if (!cumpleRetencion(orden)) return;
+  ordenEliminar.value = orden; eliminarCuenta.value = 3; clearInterval(timerEliminar);
+  timerEliminar = setInterval(() => { eliminarCuenta.value--; if (eliminarCuenta.value <= 0) clearInterval(timerEliminar); }, 1000);
+};
+const cancelarEliminacion = () => { ordenEliminar.value = null; clearInterval(timerEliminar); };
+const eliminarOrdenConfirmada = async (orden: Orden) => {
+  if (orden.estado !== 'CANCELADA' && eliminarCuenta.value > 0) return;
+  try { await api.delete(`/ordenes/${orden.id}`); cancelarEliminacion(); await cargarOrdenes(); pagina.value = Math.min(pagina.value, paginasTotales.value); }
+  catch (err: any) { errorMsg.value = err.response?.data?.message || 'No fue posible archivar la orden.'; }
 };
 
 const abrirOrden = (orden: Orden) => {
@@ -252,10 +267,7 @@ const descargarDocumento = async (documento: Documento) => {
   }
 };
 
-const monto = (orden: Orden) =>
-  orden.monto_total != null
-    ? `$${Number(orden.monto_total).toLocaleString('es-MX', { minimumFractionDigits: 2 })} MXN`
-    : 'Monto por confirmar';
+const historialResponsables = (orden: Orden) => (orden.order_logs || []).filter((log) => log.usuario?.rol === 'ADMIN' && log.estado_anterior !== log.estado_nuevo);
 </script>
 
 <template>
@@ -283,16 +295,15 @@ const monto = (orden: Orden) =>
       <div v-else-if="ordenesFiltradas.length === 0" class="py-10 text-center text-xs text-slate-400">No hay órdenes.</div>
       <div v-else class="overflow-x-auto">
         <table class="w-full min-w-[900px] text-left text-xs">
-          <thead><tr class="text-slate-400 border-b border-slate-100"><th class="pb-3">ID / Fecha</th><th class="pb-3">Cliente</th><th class="pb-3">Equipo / Tipo</th><th class="pb-3">Prioridad</th><th class="pb-3">Estado</th><th class="pb-3">Monto</th><th class="pb-3 text-right">Acción</th></tr></thead>
+          <thead><tr class="text-slate-400 border-b border-slate-100"><th class="pb-3">ID / Fecha</th><th class="pb-3">Cliente</th><th class="pb-3">Equipo / Tipo</th><th class="pb-3 text-center">Prioridad</th><th class="pb-3">Estado</th><th class="pb-3 text-right">Acción</th></tr></thead>
           <tbody class="divide-y divide-slate-100">
             <tr v-for="orden in ordenesPagina" :key="orden.id">
               <td class="py-3.5"><p class="font-bold text-blue-600">#{{ orden.id.substring(0, 8) }}</p><p class="text-[10px] text-slate-400 mt-1">{{ fechaHoraCDMX(orden.fecha_creacion) }}</p></td>
               <td class="py-3.5"><p class="font-semibold text-slate-800">{{ orden.cliente?.razon_social || 'Cliente' }}</p><p class="text-[10px] text-slate-400">{{ orden.cliente?.rfc }}</p></td>
-              <td class="py-3.5"><p class="max-w-[280px] text-slate-700">{{ orden.descripcion_equipo }}</p><span class="inline-block mt-1 px-2 py-0.5 rounded bg-slate-100 text-slate-600 text-[10px] font-bold">{{ orden.tipo_orden === 'COMPRA' ? 'Compra' : 'Renta' }}</span><div class="flex gap-1 mt-2" aria-label="Progreso de la orden"><span v-for="paso in ['EN_REVISION','APROBADA','EN_ENVIO','CONCLUIDA']" :key="paso" :title="estadoLabel[paso]" class="h-1.5 flex-1 rounded-full" :class="['EN_REVISION','APROBADA','EN_ENVIO','CONCLUIDA'].indexOf(paso) <= ['EN_REVISION','APROBADA','EN_ENVIO','CONCLUIDA'].indexOf(orden.estado) ? 'bg-blue-500' : 'bg-slate-200'"></span></div></td>
-              <td class="py-3.5"><span class="inline-block w-3 h-3 rounded-full" :class="prioridad(orden).color" :title="`Prioridad ${prioridad(orden).etiqueta}`"></span></td>
-              <td class="py-3.5"><span :class="estadoClass[orden.estado]" class="px-2.5 py-1 rounded-full text-[10px] font-bold whitespace-nowrap">{{ estadoLabel[orden.estado] }}</span><p v-if="orden.order_logs?.[0]" class="mt-1 text-[10px] text-slate-400">{{ orden.order_logs[0].usuario?.personal?.nombre_completo || orden.order_logs[0].usuario?.cliente?.nombre_contacto || orden.order_logs[0].usuario?.correo_electronico }}</p></td>
-              <td class="py-3.5 text-slate-600">{{ monto(orden) }}</td>
-              <td class="py-3.5 text-right"><div class="flex justify-end gap-2"><button @click="abrirOrden(orden)" class="px-3 py-1.5 bg-blue-50 text-blue-700 border border-blue-200 rounded-lg font-semibold">Gestionar</button><button v-if="orden.estado === 'CONCLUIDA'" @click="eliminarOrden(orden)" :disabled="eliminarId === orden.id && eliminarCuenta > 0" class="px-2 py-1 border border-red-200 text-red-700 rounded disabled:opacity-50">{{ eliminarId === orden.id ? `Confirmar (${eliminarCuenta})` : 'Eliminar' }}</button></div></td>
+              <td class="py-3.5"><p class="max-w-[280px] text-slate-700 whitespace-pre-line">{{ detalleEquipo(orden).equipo }}</p><p v-if="detalleEquipo(orden).responsable" class="text-[10px] text-slate-500 mt-1">Recibe: {{ detalleEquipo(orden).responsable }}</p><span class="inline-block mt-1 px-2 py-0.5 rounded bg-slate-100 text-slate-600 text-[10px] font-bold">{{ orden.tipo_orden === 'COMPRA' ? 'Compra' : 'Renta' }}</span><div class="flex gap-1 mt-2" aria-label="Progreso de la orden"><span v-for="paso in ['EN_REVISION','APROBADA','EN_ENVIO','CONCLUIDA']" :key="paso" :title="estadoLabel[paso]" class="h-1.5 flex-1 rounded-full" :class="['EN_REVISION','APROBADA','EN_ENVIO','CONCLUIDA'].indexOf(paso) <= ['EN_REVISION','APROBADA','EN_ENVIO','CONCLUIDA'].indexOf(orden.estado) ? 'bg-blue-500' : 'bg-slate-200'"></span><span v-if="orden.estado === 'CANCELADA'" class="h-1.5 flex-1 rounded-full bg-slate-500" :title="estadoLabel.CANCELADA"></span></div></td>
+              <td class="py-3.5 text-center"><div class="flex flex-col items-center"><span class="inline-block w-3 h-3 rounded-full" :class="prioridad(orden).color" :title="`Prioridad ${prioridad(orden).etiqueta}`"></span><span v-if="prioridad(orden).restante" class="mt-1 text-[10px] text-slate-500 whitespace-nowrap">{{ prioridad(orden).restante }}</span></div></td>
+              <td class="py-3.5"><span :class="estadoClass[orden.estado]" class="px-2.5 py-1 rounded-full text-[10px] font-bold whitespace-nowrap">{{ estadoLabel[orden.estado] }}</span><p v-if="responsableEstado(orden)" class="mt-1 text-[10px] text-slate-400">{{ responsableEstado(orden) }}</p></td>
+              <td class="py-3.5 text-right"><div class="flex justify-end gap-2"><button @click="abrirOrden(orden)" class="px-3 py-1.5 bg-blue-50 text-blue-700 border border-blue-200 rounded-lg font-semibold">Gestionar</button><button v-if="orden.estado === 'CANCELADA' || cumpleRetencion(orden)" @click="solicitarEliminarOrden(orden)" class="px-2 py-1 border border-red-200 text-red-700 rounded">{{ orden.estado === 'CANCELADA' ? 'Eliminar cancelación' : 'Archivar' }}</button></div></td>
             </tr>
           </tbody>
         </table>
@@ -308,13 +319,12 @@ const monto = (orden: Orden) =>
         </div>
 
         <div class="p-5 space-y-5">
-          <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div class="bg-slate-50 rounded-xl p-3"><p class="text-[10px] text-slate-400">Estado</p><span :class="estadoClass[modalOrden.estado]" class="inline-block mt-1 px-2 py-1 rounded-full text-[10px] font-bold">{{ estadoLabel[modalOrden.estado] }}</span></div>
-            <div class="bg-slate-50 rounded-xl p-3"><p class="text-[10px] text-slate-400">Operación</p><p class="font-bold text-xs mt-1">{{ modalOrden.tipo_orden }}</p></div>
-            <div class="bg-slate-50 rounded-xl p-3 md:col-span-2"><p class="text-[10px] text-slate-400">Total de la remisión / orden</p><p class="font-bold text-xs mt-1">{{ monto(modalOrden) }}</p></div>
+            <div class="bg-slate-50 rounded-xl p-3"><p class="text-[10px] text-slate-400">Operación</p><p class="font-bold text-xs mt-1">{{ modalOrden.tipo_orden === 'COMPRA' ? 'Compra' : 'Renta' }}</p></div>
           </div>
 
-          <div class="bg-slate-50 rounded-xl p-4"><p class="text-[10px] text-slate-400">Solicitud</p><p class="text-xs font-semibold text-slate-800 mt-1">{{ modalOrden.descripcion_equipo }}</p></div>
+          <div class="bg-slate-50 rounded-xl p-4"><p class="text-[10px] text-slate-400">Solicitud</p><p class="text-xs font-semibold text-slate-800 mt-1 whitespace-pre-line">{{ detalleEquipo(modalOrden).equipo }}</p><p v-if="detalleEquipo(modalOrden).responsable" class="text-[11px] text-slate-500 mt-2">Responsable de recibir: {{ detalleEquipo(modalOrden).responsable }}</p></div>
           <div v-if="modalOrden.fecha_requerida || modalOrden.ubicacion" class="grid sm:grid-cols-2 gap-3 text-xs"><div v-if="modalOrden.fecha_requerida" class="bg-blue-50 rounded-xl p-3"><p class="text-[10px] text-blue-500">Fecha y hora requeridas</p><p class="font-semibold mt-1">{{ new Date(modalOrden.fecha_requerida).toLocaleDateString('es-MX',{timeZone:'America/Mexico_City'}) }} {{ modalOrden.hora_requerida || '' }}</p></div><div v-if="modalOrden.ubicacion" class="bg-blue-50 rounded-xl p-3"><p class="text-[10px] text-blue-500">Ubicación</p><p class="font-semibold mt-1">{{ modalOrden.ubicacion }}</p></div></div>
           <section v-if="modalOrden.estado === 'EN_ENVIO'" class="rounded-xl border border-indigo-200 bg-indigo-50/50 p-4 space-y-3">
             <div><h2 class="text-xs font-bold text-indigo-900">Detalles del equipo médico rentado</h2><p class="text-[10px] text-slate-500 mt-1">La selección queda disponible para órdenes de renta.</p></div>
@@ -331,7 +341,7 @@ const monto = (orden: Orden) =>
             <div v-if="!documentos.length" class="border border-dashed border-slate-200 rounded-xl p-4 text-center text-xs text-slate-400">No hay documentos vinculados.</div>
             <div v-else class="space-y-2">
               <div v-for="doc in documentos" :key="doc.id" class="flex items-center justify-between gap-3 border border-slate-200 rounded-xl p-3">
-                <div class="min-w-0"><p class="text-xs font-semibold text-slate-700 truncate">{{ doc.nombre_archivo }}</p><p class="text-[10px] text-slate-400">{{ doc.tipo_documento }} · {{ Math.ceil(doc.tamano_bytes / 1024) }} KB</p></div>
+                <div class="min-w-0"><p class="text-xs font-semibold text-slate-700 truncate">{{ doc.nombre_archivo }}</p><p class="text-[10px] text-slate-400">{{ etiquetaDocumento(doc.tipo_documento) }} · {{ Math.ceil(doc.tamano_bytes / 1024) }} KB</p></div>
                 <button @click="descargarDocumento(doc)" class="px-3 py-1.5 bg-blue-50 text-blue-700 rounded-lg text-[11px] font-semibold">Descargar</button>
               </div>
             </div>
@@ -386,13 +396,14 @@ const monto = (orden: Orden) =>
             <div class="flex justify-end mt-3"><button @click="cambiarEstado('CONCLUIDA')" :disabled="loadingAccion || !comentario.trim()" class="px-4 py-2 bg-emerald-600 text-white rounded-lg text-xs font-bold disabled:opacity-50">Concluir orden</button></div>
           </section>
 
-          <section v-else class="p-4 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-700">
-            La orden está concluida. El historial y los documentos permanecen disponibles para consulta.
-          </section>
+          <section v-else class="p-4 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-700">{{ modalOrden.estado === 'CANCELADA' ? 'El cliente canceló esta orden. Puedes eliminarla del control de órdenes.' : 'La orden está concluida. El historial y los documentos permanecen disponibles para consulta.' }}</section>
+
+          <section class="border-t border-slate-200 pt-4"><h2 class="text-xs font-bold text-slate-800 mb-3">Historial de responsables de estado</h2><div v-if="!historialResponsables(modalOrden).length" class="text-xs text-slate-400">Aún no hay cambios de estado realizados por el personal.</div><ol v-else class="space-y-2"><li v-for="(log, index) in historialResponsables(modalOrden)" :key="index" class="flex items-start justify-between gap-4 rounded-lg bg-slate-50 px-3 py-2"><div><p class="text-xs font-semibold text-slate-700">{{ etiquetasEstado[log.estado_anterior] }} → {{ etiquetasEstado[log.estado_nuevo] }}</p><p class="text-[10px] text-slate-500 mt-1">{{ log.usuario?.personal?.nombre_completo || 'Personal de la empresa' }}</p></div><time class="shrink-0 text-[10px] text-slate-400">{{ fechaHoraCDMX(log.fecha_cambio) }}</time></li></ol></section>
 
           <div class="flex justify-end pt-2 border-t border-slate-100"><button @click="cerrarOrden" class="px-4 py-2 bg-slate-800 text-white rounded-lg text-xs font-semibold">Cerrar</button></div>
         </div>
       </div>
     </div>
+    <div v-if="ordenEliminar" class="fixed inset-0 z-[90] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4"><section class="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 space-y-4"><h2 class="text-base font-bold text-slate-800">Archivar orden del historial</h2><p class="text-xs text-slate-600">¿Estás seguro de ocultar la orden <strong>#{{ ordenEliminar.id.substring(0,8) }}</strong> de tu control? La orden se conserva para trazabilidad hasta que ambas partes la archiven.</p><div class="flex justify-end gap-2"><button @click="cancelarEliminacion" class="px-4 py-2 border rounded-lg text-xs font-semibold">Cancelar</button><button @click="eliminarOrdenConfirmada(ordenEliminar)" :disabled="eliminarCuenta > 0" class="px-4 py-2 bg-red-600 text-white rounded-lg text-xs font-bold disabled:opacity-50">{{ eliminarCuenta > 0 ? `Confirmar (${eliminarCuenta})` : 'Confirmar archivo' }}</button></div></section></div>
   </div>
 </template>

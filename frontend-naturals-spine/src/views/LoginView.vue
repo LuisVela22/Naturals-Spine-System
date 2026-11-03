@@ -12,8 +12,6 @@ import {
   Mail, 
   ArrowRight, 
   Activity, 
-  ShieldCheck, 
-  Building2,
   X,
   CheckCircle2,
   AlertCircle
@@ -70,16 +68,6 @@ const solicitarRecuperacion = async () => {
   }
 };
 
-const loginDemo = async (rol: 'admin' | 'cliente') => {
-  if (rol === 'admin') {
-    email.value = 'admin@naturalsspine.com';
-    password.value = 'Password123!';
-  } else {
-    email.value = 'contacto@hospitalangeles.com';
-    password.value = 'Password123!';
-  }
-  await handleLogin();
-};
 </script>
 
 <template>
@@ -209,23 +197,6 @@ const loginDemo = async (rol: 'admin' | 'cliente') => {
           </router-link>
         </div>
 
-        <div class="mt-6 p-3 bg-amber-50 border border-amber-200 rounded-xl space-y-2">
-          <p class="text-[11px] font-bold text-amber-800 text-center uppercase tracking-wider">Modo Prototipo (Accesos Rápidos)</p>
-          <button 
-            @click="loginDemo('admin')" 
-            class="w-full text-xs py-1.5 px-3 bg-blue-100 hover:bg-blue-200 text-blue-800 font-semibold rounded-lg transition inline-flex items-center justify-center space-x-2"
-          >
-            <ShieldCheck class="w-4 h-4" />
-            <span>Dashboard Empresa (Admin)</span>
-          </button>
-          <button 
-            @click="loginDemo('cliente')" 
-            class="w-full text-xs py-1.5 px-3 bg-emerald-100 hover:bg-emerald-200 text-emerald-800 font-semibold rounded-lg transition inline-flex items-center justify-center space-x-2"
-          >
-            <Building2 class="w-4 h-4" />
-            <span>Dashboard Hospital (Cliente)</span>
-          </button>
-        </div>
       </div>
     </div>
 

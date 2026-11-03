@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import api from '../api/axios';
+import { evaluarFortaleza } from '../utils/passwordStrength';
 import { 
   ArrowLeft, 
   Send, 
@@ -21,6 +22,7 @@ const form = ref({
   lada: '+52',
   telefono: '',
   password: '',
+  confirm_password: '',
 });
 
 const files = ref<{ [key: string]: File | null }>({
@@ -46,48 +48,22 @@ const buscarDireccion = () => {
 };
 const fileInputs = ref<Record<string, HTMLInputElement | null>>({ rfc: null, ine: null, domicilio: null });
 const ladaOptions = [
-  { code: '+52', country: 'México', flag: '🇲🇽' },
-  { code: '+1', country: 'Estados Unidos / Canadá', flag: '🇺🇸' },
-  { code: '+54', country: 'Argentina', flag: '🇦🇷' },
-  { code: '+55', country: 'Brasil', flag: '🇧🇷' },
-  { code: '+56', country: 'Chile', flag: '🇨🇱' },
-  { code: '+57', country: 'Colombia', flag: '🇨🇴' },
-  { code: '+58', country: 'Venezuela', flag: '🇻🇪' },
-  { code: '+51', country: 'Perú', flag: '🇵🇪' },
-  { code: '+593', country: 'Ecuador', flag: '🇪🇨' },
-  { code: '+598', country: 'Uruguay', flag: '🇺🇾' },
-  { code: '+591', country: 'Bolivia', flag: '🇧🇴' },
-  { code: '+595', country: 'Paraguay', flag: '🇵🇾' },
-  { code: '+506', country: 'Costa Rica', flag: '🇨🇷' },
-  { code: '+507', country: 'Panamá', flag: '🇵🇦' },
-  { code: '+502', country: 'Guatemala', flag: '🇬🇹' },
-  { code: '+503', country: 'El Salvador', flag: '🇸🇻' },
-  { code: '+504', country: 'Honduras', flag: '🇭🇳' },
-  { code: '+505', country: 'Nicaragua', flag: '🇳🇮' },
-  { code: '+509', country: 'Haití', flag: '🇭🇹' },
-  { code: '+34', country: 'España', flag: '🇪🇸' },
-  { code: '+44', country: 'Reino Unido', flag: '🇬🇧' },
-  { code: '+33', country: 'Francia', flag: '🇫🇷' },
-  { code: '+49', country: 'Alemania', flag: '🇩🇪' },
-  { code: '+39', country: 'Italia', flag: '🇮🇹' },
-  { code: '+81', country: 'Japón', flag: '🇯🇵' },
-  { code: '+86', country: 'China', flag: '🇨🇳' },
-  { code: '+91', country: 'India', flag: '🇮🇳' },
-  { code: '+82', country: 'Corea del Sur', flag: '🇰🇷' },
-  { code: '+61', country: 'Australia', flag: '🇦🇺' },
+  { code: '+52', country: 'México', flag: '🇲🇽', iso: 'mx' }, { code: '+1', country: 'Estados Unidos', flag: '🇺🇸', iso: 'us' }, { code: '+1', country: 'Canadá', flag: '🇨🇦', iso: 'ca' },
+  { code: '+54', country: 'Argentina', flag: '🇦🇷', iso: 'ar' }, { code: '+55', country: 'Brasil', flag: '🇧🇷', iso: 'br' }, { code: '+56', country: 'Chile', flag: '🇨🇱', iso: 'cl' }, { code: '+57', country: 'Colombia', flag: '🇨🇴', iso: 'co' }, { code: '+58', country: 'Venezuela', flag: '🇻🇪', iso: 've' },
+  { code: '+51', country: 'Perú', flag: '🇵🇪', iso: 'pe' }, { code: '+593', country: 'Ecuador', flag: '🇪🇨', iso: 'ec' }, { code: '+598', country: 'Uruguay', flag: '🇺🇾', iso: 'uy' }, { code: '+591', country: 'Bolivia', flag: '🇧🇴', iso: 'bo' }, { code: '+595', country: 'Paraguay', flag: '🇵🇾', iso: 'py' },
+  { code: '+506', country: 'Costa Rica', flag: '🇨🇷', iso: 'cr' }, { code: '+507', country: 'Panamá', flag: '🇵🇦', iso: 'pa' }, { code: '+502', country: 'Guatemala', flag: '🇬🇹', iso: 'gt' }, { code: '+503', country: 'El Salvador', flag: '🇸🇻', iso: 'sv' }, { code: '+504', country: 'Honduras', flag: '🇭🇳', iso: 'hn' }, { code: '+505', country: 'Nicaragua', flag: '🇳🇮', iso: 'ni' }, { code: '+509', country: 'Haití', flag: '🇭🇹', iso: 'ht' },
+  { code: '+34', country: 'España', flag: '🇪🇸', iso: 'es' }, { code: '+44', country: 'Reino Unido', flag: '🇬🇧', iso: 'gb' }, { code: '+33', country: 'Francia', flag: '🇫🇷', iso: 'fr' }, { code: '+49', country: 'Alemania', flag: '🇩🇪', iso: 'de' }, { code: '+39', country: 'Italia', flag: '🇮🇹', iso: 'it' }, { code: '+81', country: 'Japón', flag: '🇯🇵', iso: 'jp' }, { code: '+86', country: 'China', flag: '🇨🇳', iso: 'cn' }, { code: '+91', country: 'India', flag: '🇮🇳', iso: 'in' }, { code: '+82', country: 'Corea del Sur', flag: '🇰🇷', iso: 'kr' }, { code: '+61', country: 'Australia', flag: '🇦🇺', iso: 'au' },
 ];
+const paisActual = ref(ladaOptions[0]);
+const paisSeleccionado = computed(() => paisActual.value);
+const banderasFallidas = ref<string[]>([]);
+const errorBandera = (iso: string) => { if (!banderasFallidas.value.includes(iso)) banderasFallidas.value.push(iso); };
+const buscarPais = ref('');
+const selectorPaisAbierto = ref(false);
+const paisesFiltrados = computed(() => ladaOptions.filter((x) => `${x.country} ${x.code}`.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().includes(buscarPais.value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase())));
 const rfcRegex = /^[A-Z&Ñ]{3,4}\d{6}[A-Z0-9]{3}$/;
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const passwordStrength = computed(() => {
-  const p = form.value.password;
-  if (!p) return { score: 0, label: 'Sin contraseña', color: 'bg-slate-200' };
-  const checks = [/[a-z]/.test(p), /[A-Z]/.test(p), /\d/.test(p), /[.,\/@&_$-]/.test(p), p.length >= 8];
-  const score = checks.filter(Boolean).length;
-  if (score <= 2) return { score, label: 'Débil', color: 'bg-red-500' };
-  if (score === 3) return { score, label: 'Moderada', color: 'bg-amber-500' };
-  if (score === 4) return { score, label: 'Adecuada', color: 'bg-blue-500' };
-  return { score, label: 'Fuerte', color: 'bg-emerald-500' };
-});
+const passwordStrength = computed(() => evaluarFortaleza(form.value.password));
 const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[.,\/@&_$-])[A-Za-z\d.,\/@&_$-]{8,}$/;
 const exito = ref(false);
 const errorMsg = ref('');
@@ -107,6 +83,7 @@ const validForm = () => {
   if (!emailRegex.test(form.value.correo_electronico)) { errorMsg.value = 'Ingrese un correo electrónico válido.'; return false; }
   if (!/^\d{7,15}$/.test(form.value.telefono)) { errorMsg.value = 'El teléfono debe contener entre 7 y 15 dígitos nacionales.'; return false; }
   if (!passwordRegex.test(form.value.password)) { errorMsg.value = 'La contraseña debe tener mínimo 8 caracteres, minúscula, mayúscula, número y un carácter permitido: . , / @ & - _ $'; return false; }
+  if (form.value.password !== form.value.confirm_password) { errorMsg.value = 'Las contraseñas no coinciden.'; return false; }
   if (Object.values(files.value).some(f => !f)) { errorMsg.value = 'Adjunte los tres documentos oficiales requeridos.'; return false; }
   return true;
 };
@@ -121,8 +98,9 @@ const enviarRegistroConfirmado = async () => {
   confirmarRegistro.value = false;
   loading.value = true;
   try {
-    const payload = { ...form.value, telefono: `${form.value.lada}${form.value.telefono}` };
+    const payload: Record<string, string> = { ...form.value, telefono: `${form.value.lada}${form.value.telefono}` };
     delete (payload as any).lada;
+    delete payload.confirm_password;
 
     const formData = new FormData();
     Object.entries(payload).forEach(([key, value]) => formData.append(key, String(value)));
@@ -186,10 +164,6 @@ const enviarRegistroConfirmado = async () => {
         </div>
 
         <form v-else @submit.prevent="handleSubmit" class="space-y-6">
-          <div v-if="errorMsg" class="p-3 bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg font-semibold">
-            {{ errorMsg }}
-          </div>
-
           <!-- Sección 1 -->
           <div>
             <h3 class="text-sm font-bold text-blue-700 flex items-center mb-3">
@@ -227,14 +201,13 @@ const enviarRegistroConfirmado = async () => {
               </div>
               <div>
                 <label class="block text-xs font-medium text-slate-600 mb-1">Teléfono de Contacto *</label>
-                <div class="flex gap-2"><select v-model="form.lada" aria-label="Código internacional de país" class="w-[92px] shrink-0 text-xs p-2.5 border border-slate-300 rounded-lg bg-white">
-                  <option v-for="lada in ladaOptions" :key="lada.code" :value="lada.code">{{ lada.flag }} {{ lada.code }}</option>
-                </select>
+                <div class="flex gap-2"><div class="relative w-[124px] shrink-0"><button type="button" @click="selectorPaisAbierto = !selectorPaisAbierto; buscarPais = ''" aria-label="Seleccionar país y lada" class="flex w-full items-center justify-between text-xs p-2.5 border border-slate-300 rounded-lg bg-white"><span class="flex items-center gap-1.5"><img v-if="!banderasFallidas.includes(paisSeleccionado.iso)" :src="`https://flagcdn.com/w40/${paisSeleccionado.iso}.png`" :alt="`Bandera de ${paisSeleccionado.country}`" class="w-5 h-4 object-cover rounded-sm" @error="errorBandera(paisSeleccionado.iso)"/><span v-else class="text-lg leading-none">{{ paisSeleccionado.flag }}</span><span>{{ paisSeleccionado.code }}</span></span><span class="text-slate-400">⌄</span></button><div v-if="selectorPaisAbierto" class="absolute z-30 top-full left-0 mt-1 w-64 bg-white border border-slate-200 rounded-lg shadow-xl overflow-hidden"><input v-model="buscarPais" autofocus placeholder="Buscar país o lada" class="w-full p-2.5 text-xs border-b border-slate-200 outline-none" @keydown.esc="selectorPaisAbierto = false"/><div class="max-h-56 overflow-y-auto"><button v-for="(pais, index) in paisesFiltrados" :key="`${pais.country}-${index}`" type="button" @click="paisActual = pais; form.lada = pais.code; selectorPaisAbierto = false" class="flex w-full items-center gap-2 px-3 py-2 text-left text-xs hover:bg-blue-50"><img v-if="!banderasFallidas.includes(pais.iso)" :src="`https://flagcdn.com/w40/${pais.iso}.png`" :alt="`Bandera de ${pais.country}`" class="w-5 h-4 object-cover rounded-sm" @error="errorBandera(pais.iso)"/><span v-else class="text-lg leading-none">{{ pais.flag }}</span><span class="flex-1">{{ pais.country }}</span><span class="text-slate-500">{{ pais.code }}</span></button><p v-if="!paisesFiltrados.length" class="p-3 text-xs text-slate-400">No hay coincidencias.</p></div></div></div>
                 <input v-model="form.telefono" required type="tel" inputmode="numeric" maxlength="15" pattern="[0-9]{7,15}" @input="form.telefono = form.telefono.replace(/\D/g, '').slice(0,15)" placeholder="Número nacional" class="w-full text-xs p-2.5 border border-slate-300 rounded-lg focus:ring-1 focus:ring-blue-600 focus:outline-none" /></div><p class="text-[10px] text-slate-400 mt-1">Selecciona el código internacional y escribe entre 7 y 15 dígitos nacionales. Solo números.</p>
               </div>
               <div class="md:col-span-2">
                 <label class="block text-xs font-medium text-slate-600 mb-1">Contraseña de Acceso (mínimo 8 caracteres) *</label>
-                <input v-model="form.password" required type="password" minlength="8" pattern="(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9])(?=.*[.,/@&_$-])[A-Za-z0-9.,/@&_$-]{8,}" placeholder="••••••••" class="w-full text-xs p-2.5 border border-slate-300 rounded-lg focus:ring-1 focus:ring-blue-600 focus:outline-none" /><div class="mt-2"><div class="h-2 rounded bg-slate-100 overflow-hidden"><div class="h-full transition-all" :class="passwordStrength.color" :style="{ width: `${passwordStrength.score * 20}%` }"></div></div><p class="text-[11px] mt-1 text-slate-500">Fortaleza: <strong>{{ passwordStrength.label }}</strong></p><p class="text-[10px] text-slate-400">Usa minúscula, mayúscula, número y uno de estos caracteres: . , / @ &amp; - _ $ (mínimo 8 caracteres).</p></div>
+                <input v-model="form.password" @paste.prevent @drop.prevent required type="password" minlength="8" pattern="(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9])(?=.*[.,/@&_$-])[A-Za-z0-9.,/@&_$-]{8,}" placeholder="••••••••" class="w-full text-xs p-2.5 border border-slate-300 rounded-lg focus:ring-1 focus:ring-blue-600 focus:outline-none" /><div class="mt-2"><div class="h-2 rounded bg-slate-100 overflow-hidden"><div class="h-full transition-all" :class="passwordStrength.color" :style="{ width: `${passwordStrength.score * 20}%` }"></div></div><p class="text-[11px] mt-1 text-slate-500">Fortaleza: <strong>{{ passwordStrength.label }}</strong></p><p class="text-[10px] text-slate-400">Usa minúscula, mayúscula, número y uno de estos caracteres: . , / @ &amp; - _ $. Una contraseña fuerte supera 12 caracteres.</p></div>
+                <label class="block text-xs font-medium text-slate-600 mt-3 mb-1">Confirmar Contraseña *</label><input v-model="form.confirm_password" @paste.prevent @drop.prevent required type="password" minlength="8" placeholder="Escriba nuevamente su contraseña" class="w-full text-xs p-2.5 border border-slate-300 rounded-lg focus:ring-1 focus:ring-blue-600 focus:outline-none" />
               </div>
             </div>
           </div>
@@ -249,21 +222,22 @@ const enviarRegistroConfirmado = async () => {
               <div>
                 <label class="block text-xs font-medium text-slate-600 mb-1">Constancia de Situación Fiscal (Alta SAT) *</label>
                 <input :ref="el => fileInputs['rfc'] = el as HTMLInputElement" @change="handleFile($event, 'rfc')" type="file" accept=".pdf,image/*" class="w-full text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100" />
-                <div v-if="files.rfc" class="mt-1 flex items-center justify-between text-xs bg-white border rounded p-2"><span class="truncate">{{ files.rfc!.name }}</span><button type="button" class="inline-flex items-center gap-1 ml-2 px-2.5 py-1.5 rounded-md border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 font-semibold transition" @click="removeFile('rfc')"><X class="w-3.5 h-3.5" /> Quitar</button></div>
+                <div v-if="files.rfc" class="mt-2 flex items-center justify-between gap-3 text-xs bg-white border border-slate-200 rounded-xl p-3 shadow-sm"><span class="min-w-0 truncate font-medium text-slate-700">{{ files.rfc!.name }}</span><button type="button" class="inline-flex shrink-0 items-center gap-1 px-3 py-1.5 rounded-lg border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 font-semibold transition" @click="removeFile('rfc')"><X class="w-3.5 h-3.5" /> Quitar</button></div>
               </div>
               <div>
                 <label class="block text-xs font-medium text-slate-600 mb-1">Identificación Oficial del Representante Legal *</label>
                 <input :ref="el => fileInputs['ine'] = el as HTMLInputElement" @change="handleFile($event, 'ine')" type="file" accept=".pdf,image/*" class="w-full text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100" />
-                <div v-if="files.ine" class="mt-1 flex items-center justify-between text-xs bg-white border rounded p-2"><span class="truncate">{{ files.ine!.name }}</span><button type="button" class="inline-flex items-center gap-1 ml-2 px-2.5 py-1.5 rounded-md border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 font-semibold transition" @click="removeFile('ine')"><X class="w-3.5 h-3.5" /> Quitar</button></div>
+                <div v-if="files.ine" class="mt-2 flex items-center justify-between gap-3 text-xs bg-white border border-slate-200 rounded-xl p-3 shadow-sm"><span class="min-w-0 truncate font-medium text-slate-700">{{ files.ine!.name }}</span><button type="button" class="inline-flex shrink-0 items-center gap-1 px-3 py-1.5 rounded-lg border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 font-semibold transition" @click="removeFile('ine')"><X class="w-3.5 h-3.5" /> Quitar</button></div>
               </div>
               <div>
                 <label class="block text-xs font-medium text-slate-600 mb-1">Comprobante de Domicilio de la Institución *</label>
                 <input :ref="el => fileInputs['domicilio'] = el as HTMLInputElement" @change="handleFile($event, 'domicilio')" type="file" accept=".pdf,image/*" class="w-full text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100" />
-                <div v-if="files.domicilio" class="mt-1 flex items-center justify-between text-xs bg-white border rounded p-2"><span class="truncate">{{ files.domicilio!.name }}</span><button type="button" class="inline-flex items-center gap-1 ml-2 px-2.5 py-1.5 rounded-md border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 font-semibold transition" @click="removeFile('domicilio')"><X class="w-3.5 h-3.5" /> Quitar</button></div>
+                <div v-if="files.domicilio" class="mt-2 flex items-center justify-between gap-3 text-xs bg-white border border-slate-200 rounded-xl p-3 shadow-sm"><span class="min-w-0 truncate font-medium text-slate-700">{{ files.domicilio!.name }}</span><button type="button" class="inline-flex shrink-0 items-center gap-1 px-3 py-1.5 rounded-lg border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 font-semibold transition" @click="removeFile('domicilio')"><X class="w-3.5 h-3.5" /> Quitar</button></div>
               </div>
             </div>
           </div>
 
+          <div v-if="errorMsg" class="p-3 bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg font-semibold" role="alert" aria-live="polite">{{ errorMsg }}</div>
           <button 
             type="submit" 
             :disabled="loading"

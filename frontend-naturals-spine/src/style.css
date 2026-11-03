@@ -1,1 +1,15 @@
 @import "tailwindcss";
+
+.dark-mode,
+.dark-mode body { background-color: #0f172a; color: #e2e8f0; }
+.dark-mode .bg-white { background-color: #1e293b !important; }
+.dark-mode .bg-slate-50 { background-color: #172235 !important; }
+.dark-mode .bg-slate-100 { background-color: #0f172a !important; }
+.dark-mode .h-screen { background-color: #0f172a !important; }
+.dark-mode .text-slate-800, .dark-mode .text-slate-700 { color: #e2e8f0 !important; }
+.dark-mode .text-slate-600, .dark-mode .text-slate-500 { color: #cbd5e1 !important; }
+.dark-mode .text-slate-400 { color: #94a3b8 !important; }
+.dark-mode .border-slate-100, .dark-mode .border-slate-200, .dark-mode .border-slate-300 { border-color: #334155 !important; }
+.dark-mode input:not([type="radio"]):not([type="checkbox"]), .dark-mode textarea, .dark-mode select { background-color: #172235; color: #e2e8f0; border-color: #475569; }
+.dark-mode input::placeholder, .dark-mode textarea::placeholder { color: #94a3b8; }
+.dark-mode .shadow-sm, .dark-mode .shadow-xl { box-shadow: 0 10px 30px rgb(0 0 0 / 25%); }

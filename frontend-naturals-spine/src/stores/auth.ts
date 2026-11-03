@@ -26,5 +26,10 @@ export const useAuthStore = defineStore('auth', {
       localStorage.removeItem('token');
       localStorage.removeItem('user');
     },
+    async setDarkMode(enabled: boolean) {
+      const { data } = await api.patch('/auth/modo-oscuro', { modo_oscuro: enabled });
+      this.user = { ...this.user, modo_oscuro: data.modo_oscuro };
+      localStorage.setItem('user', JSON.stringify(this.user));
+    },
   },
 });

@@ -9,7 +9,7 @@ import {
   User, 
   Zap 
 } from 'lucide-vue-next';
-import { etiquetasEstado, fechaHoraCDMX } from '../../utils/orden';
+import { etiquetasEstado, fechaHoraCDMX, prioridadOrden } from '../../utils/orden';
 
 const ordenes = ref<any[]>([]);
 const clientesPendientes = ref<any[]>([]);
@@ -40,10 +40,10 @@ onMounted(() => { cargarDatos(true); refresco = setInterval(() => cargarDatos(),
 onBeforeUnmount(() => { clearInterval(refresco); clearInterval(relojTimer); });
 
 const prioridad = (o: any) => {
-  if (!o.fecha_requerida) return { color: 'bg-slate-300', label: 'Sin fecha requerida' };
-  const dias = (new Date(o.fecha_requerida).getTime() - reloj.value) / 86400000;
-  return dias > 7 ? { color: 'bg-emerald-500', label: 'Prioridad baja' } : dias >= 3 ? { color: 'bg-amber-400', label: 'Prioridad media' } : { color: 'bg-red-600', label: 'Prioridad alta' };
+  const actual = prioridadOrden(o.fecha_requerida, o.hora_requerida, o.estado, reloj.value);
+  return { ...actual, label: actual.etiqueta };
 };
+const responsableEstado = (orden: any) => [...(orden.order_logs || [])].reverse().find((log: any) => log.usuario?.rol === 'ADMIN' && log.estado_anterior !== log.estado_nuevo)?.usuario?.personal?.nombre_completo || '';
 
 const ordenesPendientes = computed(() => {
   return ordenes.value.filter((o) => o.estado === 'EN_REVISION').length;
@@ -155,7 +155,7 @@ const ordenesEnProceso = computed(() => {
                 <td class="py-3"><p class="font-bold text-blue-600">#{{ ord.id.substring(0, 8) }}</p><p class="text-[10px] text-slate-400">{{ fechaHoraCDMX(ord.fecha_creacion) }}</p></td>
                 <td class="py-3 text-slate-700">{{ ord.cliente?.razon_social || 'Cliente' }}</td>
                 <td class="py-3">
-                  <span class="inline-block w-3 h-3 rounded-full" :class="prioridad(ord).color" :title="prioridad(ord).label"></span>
+                  <div class="flex flex-col items-center"><span class="inline-block w-3 h-3 rounded-full" :class="prioridad(ord).color" :title="prioridad(ord).label"></span><span v-if="prioridad(ord).restante" class="mt-1 text-[10px] text-slate-500 whitespace-nowrap">{{ prioridad(ord).restante }}</span></div>
                 </td>
                 <td class="py-3">
                   <span 
@@ -163,12 +163,14 @@ const ordenesEnProceso = computed(() => {
                       'bg-amber-100 text-amber-700': ord.estado === 'EN_REVISION',
                       'bg-blue-100 text-blue-700': ord.estado === 'APROBADA',
                       'bg-sky-100 text-sky-700': ord.estado === 'EN_ENVIO',
-                      'bg-emerald-100 text-emerald-700': ord.estado === 'CONCLUIDA'
+                      'bg-emerald-100 text-emerald-700': ord.estado === 'CONCLUIDA',
+                      'bg-slate-100 text-slate-700': ord.estado === 'CANCELADA',
                     }"
                     class="px-2.5 py-1 rounded-full text-[10px] font-bold"
                   >
                     {{ etiquetasEstado[ord.estado] || ord.estado }}
                   </span>
+                  <span v-if="responsableEstado(ord)" class="block mt-1 text-[10px] text-slate-400">{{ responsableEstado(ord) }}</span>
                 </td>
                 <td class="py-3 text-right">
                   <router-link to="/admin/ordenes" class="inline-block px-3 py-1 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-lg text-[11px] shadow-sm">
