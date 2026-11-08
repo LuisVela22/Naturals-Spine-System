@@ -93,7 +93,7 @@ const logout = () => {
         </button>
 
         <div class="flex items-center space-x-3 ml-auto">
-          <button @click="alternarModoOscuro" :aria-pressed="modoOscuro" aria-label="Cambiar modo oscuro" class="p-2 rounded-lg hover:bg-slate-100 text-slate-600" :class="modoOscuro ? 'bg-slate-200 text-blue-700' : ''"><Sun v-if="modoOscuro" class="w-5 h-5" /><Moon v-else class="w-5 h-5" /></button>
+          <button @click="alternarModoOscuro" :aria-pressed="modoOscuro" aria-label="Cambiar modo oscuro" class="p-2 rounded-lg hover:bg-slate-100 text-slate-600" :class="modoOscuro ? 'bg-amber-300 text-slate-950 ring-2 ring-amber-200 hover:bg-amber-200' : ''"><Sun v-if="modoOscuro" class="w-5 h-5" /><Moon v-else class="w-5 h-5" /></button>
           <div class="text-right">
             <p class="text-xs font-bold text-slate-800 leading-tight">
               {{ auth.user?.cliente?.razon_social || 'Hospital Cliente' }}

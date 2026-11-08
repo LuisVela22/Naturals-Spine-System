@@ -1,4 +1,10 @@
 node_modules
 dist
+coverage
+test
 .git
 .env
+.env.*
+!.env.example
+storage
+npm-debug.log*

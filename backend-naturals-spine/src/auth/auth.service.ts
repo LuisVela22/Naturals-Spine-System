@@ -8,10 +8,15 @@ import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 import { promises as fs } from 'fs';
 import * as path from 'path';
-import { Rol, EstadoValidacion } from '@prisma/client';
+import { Rol, EstadoValidacion, TipoDocumento } from '@prisma/client';
+import { Storage } from '@google-cloud/storage';
+import { nombreObjetoDocumento } from '../documentos/storage-path';
 
 @Injectable()
 export class AuthService {
+  private storage = new Storage();
+  private bucketName = process.env.GCP_STORAGE_BUCKET_NAME || 'naturals-spine-docs-bucket';
+
   constructor(
     private prisma: PrismaService,
     private jwtService: JwtService,
@@ -33,65 +38,101 @@ export class AuthService {
       throw new BadRequestException('El RFC ya está registrado en el sistema');
     }
 
+    const tipoPorCampo: Record<string, TipoDocumento> = {
+      documento_rfc: TipoDocumento.RFC,
+      documento_ine: TipoDocumento.INE,
+      documento_domicilio: TipoDocumento.COMPROBANTE_DOMICILIO,
+    };
+    const archivos = files.filter((file) => Boolean(tipoPorCampo[file.fieldname]));
+    const requeridos = Object.keys(tipoPorCampo);
+    if (requeridos.some((campo) => archivos.filter((file) => file.fieldname === campo).length !== 1)) {
+      throw new BadRequestException('Adjunte exactamente una constancia fiscal, identificación oficial y comprobante de domicilio.');
+    }
+    for (const file of archivos) {
+      if (!['application/pdf', 'image/jpeg', 'image/png'].includes(file.mimetype) || file.size > 5 * 1024 * 1024) {
+        throw new BadRequestException('Los documentos deben ser PDF, JPEG o PNG y pesar máximo 5 MB.');
+      }
+    }
+
     const password_hash = await bcrypt.hash(dto.password, 10);
+    const usuarioId = crypto.randomUUID();
+    const clienteId = crypto.randomUUID();
+    const local = (process.env.STORAGE_PROVIDER || 'local').toLowerCase() === 'local';
+    const localDir = path.resolve(process.env.LOCAL_STORAGE_DIR || path.join(process.cwd(), 'storage', 'documentos'));
+    const objetosSubidos: string[] = [];
+    const documentos = archivos.map((file) => ({
+      file,
+      tipo: tipoPorCampo[file.fieldname],
+      ruta: local
+        ? `local/${Date.now()}_${crypto.randomBytes(6).toString('hex')}_${path.basename(file.originalname).replace(/[^a-zA-Z0-9._-]/g, '_')}`
+        : nombreObjetoDocumento(dto.rfc, tipoPorCampo[file.fieldname], file.originalname),
+    }));
 
-    return this.prisma.$transaction(async (tx) => {
-      const usuario = await tx.usuario.create({
-        data: {
-          correo_electronico: dto.correo_electronico,
-          password_hash,
-          rol: Rol.CLIENTE,
-          activo: false,
-        },
-      });
-
-      const cliente = await tx.clienteInstitucional.create({
-        data: {
-          usuario_id: usuario.id,
-          rfc: dto.rfc,
-          razon_social: dto.razon_social,
-          nombre_contacto: dto.nombre_contacto,
-          telefono: dto.telefono,
-          direccion_fiscal: dto.direccion_fiscal,
-          estado_validacion: EstadoValidacion.PENDIENTE,
-        },
-      });
-
-      const localDir = path.resolve(process.env.LOCAL_STORAGE_DIR || path.join(process.cwd(), 'storage', 'documentos'));
-      await fs.mkdir(localDir, { recursive: true });
-      const tipoPorCampo: Record<string, 'RFC' | 'INE' | 'COMPROBANTE_DOMICILIO'> = {
-        documento_rfc: 'RFC',
-        documento_ine: 'INE',
-        documento_domicilio: 'COMPROBANTE_DOMICILIO',
-      };
-      for (const file of files) {
-        if (!tipoPorCampo[file.fieldname]) continue;
-        if (!['application/pdf', 'image/jpeg', 'image/png'].includes(file.mimetype) || file.size > 5 * 1024 * 1024) {
-          throw new BadRequestException('Los documentos deben ser PDF, JPEG o PNG y pesar máximo 5 MB.');
+    try {
+      for (const documento of documentos) {
+        if (local) {
+          await fs.mkdir(localDir, { recursive: true });
+          await fs.writeFile(path.join(localDir, path.basename(documento.ruta)), documento.file.buffer);
+        } else {
+          await this.storage.bucket(this.bucketName).file(documento.ruta).save(documento.file.buffer, {
+            resumable: false,
+            metadata: { contentType: documento.file.mimetype },
+          });
         }
-        const safeName = path.basename(file.originalname).replace(/[^a-zA-Z0-9._-]/g, '_');
-        const uniqueName = `${Date.now()}_${crypto.randomBytes(5).toString('hex')}_${safeName}`;
-        const absolutePath = path.join(localDir, uniqueName);
-        await fs.writeFile(absolutePath, file.buffer);
-        await tx.documento.create({
-          data: {
-            cliente_id: cliente.id,
-            tipo_documento: tipoPorCampo[file.fieldname],
-            nombre_archivo: file.originalname,
-            url_gcs: `local/${uniqueName}`,
-            mime_type: file.mimetype,
-            tamano_bytes: file.size,
-            cargado_por: usuario.id,
-          },
-        });
+        objetosSubidos.push(documento.ruta);
       }
 
-      return {
-        mensaje: 'Solicitud de registro enviada. En espera de validación administrativa por Naturals & Spine.',
-        cliente_id: cliente.id,
-        estado: EstadoValidacion.PENDIENTE,
-      };
-    });
+      await this.prisma.$transaction(async (tx) => {
+        await tx.usuario.create({
+          data: {
+            id: usuarioId,
+            correo_electronico: dto.correo_electronico,
+            password_hash,
+            rol: Rol.CLIENTE,
+            activo: false,
+          },
+        });
+        await tx.clienteInstitucional.create({
+          data: {
+            id: clienteId,
+            usuario_id: usuarioId,
+            rfc: dto.rfc,
+            razon_social: dto.razon_social,
+            nombre_contacto: dto.nombre_contacto,
+            telefono: dto.telefono,
+            direccion_fiscal: dto.direccion_fiscal,
+            estado_validacion: EstadoValidacion.PENDIENTE,
+          },
+        });
+        for (const documento of documentos) {
+          await tx.documento.create({
+            data: {
+              cliente_id: clienteId,
+              tipo_documento: documento.tipo,
+              nombre_archivo: documento.file.originalname,
+              url_gcs: documento.ruta,
+              mime_type: documento.file.mimetype,
+              tamano_bytes: documento.file.size,
+              cargado_por: usuarioId,
+            },
+          });
+        }
+      });
+    } catch (error) {
+      await Promise.all(objetosSubidos.map(async (ruta) => {
+        try {
+          if (local) await fs.unlink(path.join(localDir, path.basename(ruta)));
+          else await this.storage.bucket(this.bucketName).file(ruta).delete({ ignoreNotFound: true });
+        } catch {}
+      }));
+      throw error;
+    }
+
+    return {
+      mensaje: 'Solicitud de registro enviada. En espera de validación administrativa por Naturals & Spine.',
+      cliente_id: clienteId,
+      estado: EstadoValidacion.PENDIENTE,
+    };
   }
 
   async login(dto: LoginDto) {

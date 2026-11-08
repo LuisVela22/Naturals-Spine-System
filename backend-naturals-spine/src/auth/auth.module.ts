@@ -10,7 +10,7 @@ import { NotificacionesModule } from '../notificaciones/notificaciones.module';
   imports: [
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.register({
-      secret: process.env.JWT_SECRET || 'secretKeyNaturalsSpine2026',
+      secret: process.env.JWT_SECRET,
       signOptions: { expiresIn: '12h' },
     }),
     NotificacionesModule,

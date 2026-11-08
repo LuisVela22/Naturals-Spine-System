@@ -1,0 +1,21 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --target
+      - runner
+      - --tag
+      - ${_BACKEND_IMAGE}
+      - .
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --target
+      - migrator
+      - --tag
+      - ${_MIGRATOR_IMAGE}
+      - .
+images:
+  - ${_BACKEND_IMAGE}
+  - ${_MIGRATOR_IMAGE}
+timeout: 1800s

@@ -10,7 +10,7 @@ export class AuthController {
   constructor(private authService: AuthService) {}
 
   @Post('registro-cliente')
-  @UseInterceptors(AnyFilesInterceptor())
+  @UseInterceptors(AnyFilesInterceptor({ limits: { fileSize: 5 * 1024 * 1024, files: 3 } }))
   registrarCliente(@Body() dto: RegistroClienteDto, @UploadedFiles() files: Array<{ fieldname: string; originalname: string; mimetype: string; size: number; buffer: Buffer }>) {
     const documentos = files || [];
     const requeridos = ['documento_rfc', 'documento_ine', 'documento_domicilio'];

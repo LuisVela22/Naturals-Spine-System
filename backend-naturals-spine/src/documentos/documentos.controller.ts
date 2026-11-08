@@ -16,6 +16,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { Response } from 'express';
 import { DocumentosService } from './documentos.service';
 import { VincularDocumentoDto } from './dto/vincular-documento.dto';
+import { ConfirmarCargaDto } from './dto/confirmar-carga.dto';
 
 @Controller('documentos')
 @UseGuards(AuthGuard('jwt'))
@@ -49,12 +50,9 @@ export class DocumentosController {
   }
 
   @Post('confirmar')
-  confirmarCarga(
-    @Req() req: any,
-    @Body('rutaGcs') rutaGcs: string,
-    @Body() dto: VincularDocumentoDto,
-  ) {
-    return this.documentosService.confirmarCarga(req.user.id, rutaGcs, dto);
+  confirmarCarga(@Req() req: any, @Body() dto: ConfirmarCargaDto) {
+    const { rutaGcs, ...documento } = dto;
+    return this.documentosService.confirmarCarga(req.user, rutaGcs, documento);
   }
 
   @Get('orden/:ordenId')

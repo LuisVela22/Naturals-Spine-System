@@ -1,0 +1,91 @@
+$ErrorActionPreference = "Stop"
+
+$Project = "naturals-spine-system"
+$Region = "northamerica-south1"
+$ServiceAccount = "backend-naturals-spine@naturals-spine-system.iam.gserviceaccount.com"
+$Image = "northamerica-south1-docker.pkg.dev/naturals-spine-system/naturals-spine-images/backend-migrator:20261103-05"
+$CloudSqlInstance = "naturals-spine-system:northamerica-south1:naturals-spine-postgres"
+
+$Correo = "admin@naturalsspine.com"
+$NumeroEmpleado = "NS-001"
+$NombreCompleto = "Administrador Principal"
+$Departamento = "Operaciones"
+
+$Sufijo = Get-Date -Format "yyyyMMddHHmmss"
+$Job = "crear-personal-$Sufijo"
+$Secret = "personal-inicial-$Sufijo"
+$PasswordFile = $null
+$Bstr = [IntPtr]::Zero
+$JobCreated = $false
+$SecretCreated = $false
+$CreationSucceeded = $false
+
+$SecurePassword = Read-Host "Contraseña inicial" -AsSecureString
+$Bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
+
+try {
+    $Password = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($Bstr)
+    $PasswordFile = Join-Path $env:TEMP "$Secret.txt"
+    [IO.File]::WriteAllText(
+        $PasswordFile,
+        $Password,
+        [Text.UTF8Encoding]::new($false)
+    )
+
+    gcloud secrets create $Secret --project=$Project --replication-policy=automatic
+    if ($LASTEXITCODE -ne 0) { throw "No se pudo crear el secreto." }
+    $SecretCreated = $true
+
+    gcloud secrets versions add $Secret --project=$Project --data-file=$PasswordFile
+    if ($LASTEXITCODE -ne 0) { throw "No se pudo guardar la contraseña inicial." }
+
+    gcloud secrets add-iam-policy-binding $Secret `
+        --project=$Project `
+        --member="serviceAccount:$ServiceAccount" `
+        --role="roles/secretmanager.secretAccessor"
+    if ($LASTEXITCODE -ne 0) { throw "No se pudo dar acceso al secreto." }
+
+    gcloud run jobs create $Job `
+        --project=$Project `
+        --region=$Region `
+        --image=$Image `
+        --service-account=$ServiceAccount `
+        --command=node `
+        --args="-r,ts-node/register,prisma/crear-personal.ts" `
+        --set-env-vars="NUEVO_CORREO=$Correo,NUMERO_EMPLEADO=$NumeroEmpleado,NOMBRE_COMPLETO=$NombreCompleto,DEPARTAMENTO=$Departamento" `
+        --set-secrets="DATABASE_URL=naturals-spine-database-url:latest,NUEVA_PASSWORD=$Secret`:latest" `
+        --set-cloudsql-instances=$CloudSqlInstance `
+        --tasks=1 `
+        --max-retries=0
+    if ($LASTEXITCODE -ne 0) { throw "No se pudo crear el trabajo de Cloud Run." }
+    $JobCreated = $true
+
+    gcloud run jobs execute $Job --project=$Project --region=$Region --wait
+    if ($LASTEXITCODE -ne 0) {
+        throw "Falló la creación de la cuenta. Conserva el secreto y el trabajo para revisar los registros."
+    }
+
+    $CreationSucceeded = $true
+    Write-Host "Cuenta creada correctamente."
+
+    gcloud run jobs delete $Job --project=$Project --region=$Region --quiet
+    if ($LASTEXITCODE -eq 0) { $JobCreated = $false }
+
+    gcloud secrets delete $Secret --project=$Project --quiet
+    if ($LASTEXITCODE -eq 0) { $SecretCreated = $false }
+}
+finally {
+    if ($PasswordFile -and (Test-Path -LiteralPath $PasswordFile)) {
+        Remove-Item -LiteralPath $PasswordFile -Force
+    }
+    if ($Bstr -ne [IntPtr]::Zero) {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($Bstr)
+    }
+    $Password = $null
+}
+
+if (-not $CreationSucceeded) {
+    Write-Host "La cuenta no se confirmó como creada."
+    if ($JobCreated) { Write-Host "Trabajo para revisar: $Job" }
+    if ($SecretCreated) { Write-Host "Secreto conservado para revisar: $Secret" }
+}

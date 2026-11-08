@@ -15,8 +15,8 @@ export class NotificacionesService implements OnModuleInit {
   private alertaTimer: ReturnType<typeof setInterval>;
 
   constructor(private readonly prisma: PrismaService) {
-    const user = process.env.MAIL_USER || 'naturals.spine.notificaciones@gmail.com';
-    const pass = process.env.MAIL_PASS || 'pziodsgzetdjglaj';
+    const user = process.env.MAIL_USER;
+    const pass = process.env.MAIL_PASS;
 
     this.transporter = nodemailer.createTransport({
       service: 'gmail',
